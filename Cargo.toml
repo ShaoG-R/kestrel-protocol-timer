@@ -9,3 +9,10 @@ parking_lot = "0.12.5"
 rustc-hash = "2.1.1"
 crossbeam = "0.8"
 futures = "0.3"
+
+[dev-dependencies]
+criterion = { version = "0.5", features = ["async_tokio"] }
+
+[[bench]]
+name = "service_benchmark"
+harness = false

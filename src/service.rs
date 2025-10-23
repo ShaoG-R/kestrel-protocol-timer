@@ -62,7 +62,7 @@ pub struct TimerService {
     /// 命令发送端
     command_tx: mpsc::Sender<ServiceCommand>,
     /// 超时接收端
-    timeout_rx: mpsc::Receiver<TaskId>,
+    timeout_rx: Option<mpsc::Receiver<TaskId>>,
     /// Actor 任务句柄
     actor_handle: Option<JoinHandle<()>>,
     /// 时间轮 ID（用于验证所有句柄来自同一个时间轮）
@@ -102,7 +102,7 @@ impl TimerService {
 
         Self {
             command_tx,
-            timeout_rx,
+            timeout_rx: Some(timeout_rx),
             actor_handle: Some(actor_handle),
             timer_wheel_id,
             op_sender,
@@ -135,7 +135,7 @@ impl TimerService {
     /// service.add_batch_handle(batch).await.unwrap();
     /// # }
     /// ```
-    pub async fn add_batch_handle(&mut self, batch: BatchHandle) -> Result<(), TimerError> {
+    pub async fn add_batch_handle(&self, batch: BatchHandle) -> Result<(), TimerError> {
         // 验证 timer_wheel_id
         let batch_wheel_id = batch.timer_wheel_id();
         if self.timer_wheel_id != batch_wheel_id {
@@ -174,7 +174,7 @@ impl TimerService {
     /// service.add_timer_handle(handle).await.unwrap();
     /// # }
     /// ```
-    pub async fn add_timer_handle(&mut self, handle: TimerHandle) -> Result<(), TimerError> {
+    pub async fn add_timer_handle(&self, handle: TimerHandle) -> Result<(), TimerError> {
         // 验证 timer_wheel_id
         let handle_wheel_id = handle.timer_wheel_id();
         if self.timer_wheel_id != handle_wheel_id {
@@ -190,10 +190,13 @@ impl TimerService {
             .map_err(|_| TimerError::ChannelClosed)
     }
 
-    /// 获取超时接收器的可变引用
+    /// 获取超时接收器（转移所有权）
     ///
     /// # 返回
-    /// 超时通知接收器的可变引用
+    /// 超时通知接收器，如果已经被取走则返回 None
+    ///
+    /// # 注意
+    /// 此方法只能调用一次，因为它会转移接收器的所有权
     ///
     /// # 示例
     /// ```no_run
@@ -204,14 +207,14 @@ impl TimerService {
     /// let timer = TimerWheel::with_defaults().unwrap();
     /// let mut service = timer.create_service();
     /// 
-    /// let mut rx = service.timeout_receiver();
+    /// let mut rx = service.take_receiver().unwrap();
     /// while let Some(task_id) = rx.recv().await {
     ///     println!("Task {:?} timed out", task_id);
     /// }
     /// # }
     /// ```
-    pub fn timeout_receiver(&mut self) -> &mut mpsc::Receiver<TaskId> {
-        &mut self.timeout_rx
+    pub fn take_receiver(&mut self) -> Option<mpsc::Receiver<TaskId>> {
+        self.timeout_rx.take()
     }
 
     /// 取消指定的任务
@@ -321,7 +324,7 @@ impl TimerService {
     /// println!("Scheduled task: {:?}", task_id);
     /// # }
     /// ```
-    pub async fn schedule_once<C>(&mut self, delay: Duration, callback: C) -> Result<TaskId, TimerError>
+    pub async fn schedule_once<C>(&self, delay: Duration, callback: C) -> Result<TaskId, TimerError>
     where
         C: TimerCallback,
     {
@@ -365,7 +368,7 @@ impl TimerService {
     /// println!("Scheduled {} tasks", task_ids.len());
     /// # }
     /// ```
-    pub async fn schedule_once_batch<C>(&mut self, callbacks: Vec<(Duration, C)>) -> Result<Vec<TaskId>, TimerError>
+    pub async fn schedule_once_batch<C>(&self, callbacks: Vec<(Duration, C)>) -> Result<Vec<TaskId>, TimerError>
     where
         C: TimerCallback,
     {
@@ -405,7 +408,7 @@ impl TimerService {
     /// // 可以通过 timeout_receiver 接收超时通知
     /// # }
     /// ```
-    pub async fn schedule_once_notify(&mut self, delay: Duration) -> Result<TaskId, TimerError> {
+    pub async fn schedule_once_notify(&self, delay: Duration) -> Result<TaskId, TimerError> {
         // 创建无回调任务并获取句柄
         let handle = self.create_timer_handle(delay, None).await?;
         let task_id = handle.task_id();
@@ -657,7 +660,7 @@ mod tests {
 
         // 接收超时通知
         let mut received_count = 0;
-        let rx = service.timeout_receiver();
+        let mut rx = service.take_receiver().unwrap();
         
         // 使用 timeout 避免测试挂起
         while received_count < expected_count {
@@ -686,7 +689,7 @@ mod tests {
         service.add_timer_handle(handle).await.unwrap();
 
         // 接收超时通知
-        let rx = service.timeout_receiver();
+        let mut rx = service.take_receiver().unwrap();
         let received_task_id = tokio::time::timeout(Duration::from_millis(200), rx.recv())
             .await
             .expect("Should receive timeout notification")
@@ -713,7 +716,7 @@ mod tests {
 
         // 应该接收到 3 个超时通知
         let mut received_count = 0;
-        let rx = service.timeout_receiver();
+        let mut rx = service.take_receiver().unwrap();
         
         while received_count < 3 {
             match tokio::time::timeout(Duration::from_millis(200), rx.recv()).await {
@@ -731,7 +734,7 @@ mod tests {
     #[tokio::test]
     async fn test_shutdown() {
         let timer = TimerWheel::with_defaults().unwrap();
-        let mut service = timer.create_service();
+        let service = timer.create_service();
 
         // 添加一些定时器
         let callbacks: Vec<_> = (0..5)
@@ -768,7 +771,7 @@ mod tests {
 
         // 接收所有超时通知
         let mut received_count = 0;
-        let rx = service.timeout_receiver();
+        let mut rx = service.take_receiver().unwrap();
         
         while received_count < 3 {
             match tokio::time::timeout(Duration::from_millis(200), rx.recv()).await {
@@ -791,7 +794,7 @@ mod tests {
     async fn test_timer_wheel_id_mismatch() {
         let timer1 = TimerWheel::with_defaults().unwrap();
         let timer2 = TimerWheel::with_defaults().unwrap();
-        let mut service = timer1.create_service();
+        let service = timer1.create_service();
 
         // 添加来自 timer1 的句柄
         let handle1 = timer1.schedule_once(Duration::from_millis(100), || async {}).await.unwrap();
@@ -814,7 +817,7 @@ mod tests {
     async fn test_timer_wheel_id_mismatch_batch() {
         let timer1 = TimerWheel::with_defaults().unwrap();
         let timer2 = TimerWheel::with_defaults().unwrap();
-        let mut service = timer1.create_service();
+        let service = timer1.create_service();
 
         // 添加来自 timer1 的批量句柄
         let callbacks1: Vec<_> = (0..2)
@@ -842,7 +845,7 @@ mod tests {
     #[tokio::test]
     async fn test_cancel_task() {
         let timer = TimerWheel::with_defaults().unwrap();
-        let mut service = timer.create_service();
+        let service = timer.create_service();
 
         // 添加一个长时间的定时器
         let handle = timer.schedule_once(Duration::from_secs(10), || async {}).await.unwrap();
@@ -862,7 +865,7 @@ mod tests {
     #[tokio::test]
     async fn test_cancel_nonexistent_task() {
         let timer = TimerWheel::with_defaults().unwrap();
-        let mut service = timer.create_service();
+        let service = timer.create_service();
 
         // 添加一个定时器以初始化 service
         let handle = timer.schedule_once(Duration::from_millis(50), || async {}).await.unwrap();
@@ -877,7 +880,7 @@ mod tests {
     #[tokio::test]
     async fn test_cancel_task_from_batch() {
         let timer = TimerWheel::with_defaults().unwrap();
-        let mut service = timer.create_service();
+        let service = timer.create_service();
 
         // 创建批量定时器
         let callbacks: Vec<_> = (0..3)
@@ -913,7 +916,7 @@ mod tests {
         service.add_timer_handle(handle).await.unwrap();
 
         // 等待任务超时
-        let rx = service.timeout_receiver();
+        let mut rx = service.take_receiver().unwrap();
         let received_task_id = tokio::time::timeout(Duration::from_millis(200), rx.recv())
             .await
             .expect("Should receive timeout notification")
@@ -932,7 +935,7 @@ mod tests {
     #[tokio::test]
     async fn test_cancel_task_no_wait() {
         let timer = TimerWheel::with_defaults().unwrap();
-        let mut service = timer.create_service();
+        let service = timer.create_service();
 
         // 添加一个长时间的定时器
         let handle = timer.schedule_once(Duration::from_secs(10), || async {}).await.unwrap();
@@ -954,7 +957,7 @@ mod tests {
     #[tokio::test]
     async fn test_cancel_task_no_wait_nonexistent() {
         let timer = TimerWheel::with_defaults().unwrap();
-        let mut service = timer.create_service();
+        let service = timer.create_service();
 
         // 添加一个定时器以初始化 service
         let handle = timer.schedule_once(Duration::from_millis(50), || async {}).await.unwrap();
@@ -969,7 +972,7 @@ mod tests {
     #[tokio::test]
     async fn test_cancel_task_spawns_background_task() {
         let timer = TimerWheel::with_defaults().unwrap();
-        let mut service = timer.create_service();
+        let service = timer.create_service();
         let counter = Arc::new(AtomicU32::new(0));
 
         // 创建一个定时器
@@ -1019,7 +1022,7 @@ mod tests {
         ).await.unwrap();
 
         // 等待定时器触发
-        let rx = service.timeout_receiver();
+        let mut rx = service.take_receiver().unwrap();
         let received_task_id = tokio::time::timeout(Duration::from_millis(200), rx.recv())
             .await
             .expect("Should receive timeout notification")
@@ -1056,7 +1059,7 @@ mod tests {
 
         // 接收所有超时通知
         let mut received_count = 0;
-        let rx = service.timeout_receiver();
+        let mut rx = service.take_receiver().unwrap();
         
         while received_count < 3 {
             match tokio::time::timeout(Duration::from_millis(200), rx.recv()).await {
@@ -1084,7 +1087,7 @@ mod tests {
         let task_id = service.schedule_once_notify(Duration::from_millis(50)).await.unwrap();
 
         // 接收超时通知
-        let rx = service.timeout_receiver();
+        let mut rx = service.take_receiver().unwrap();
         let received_task_id = tokio::time::timeout(Duration::from_millis(200), rx.recv())
             .await
             .expect("Should receive timeout notification")
@@ -1096,7 +1099,7 @@ mod tests {
     #[tokio::test]
     async fn test_schedule_and_cancel_direct() {
         let timer = TimerWheel::with_defaults().unwrap();
-        let mut service = timer.create_service();
+        let service = timer.create_service();
         let counter = Arc::new(AtomicU32::new(0));
 
         // 直接调度定时器
