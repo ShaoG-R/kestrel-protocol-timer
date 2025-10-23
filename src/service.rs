@@ -1,9 +1,11 @@
-use crate::task::{TaskId, TimerWheelId};
+use crate::task::{CallbackWrapper, TaskId, TimerCallback, TimerWheelId};
 use crate::timer::{BatchHandle, TimerHandle, WheelOperation};
 use crate::error::TimerError;
 use crossbeam::channel::Sender;
 use futures::stream::{FuturesUnordered, StreamExt};
 use futures::future::BoxFuture;
+use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
 
@@ -65,6 +67,8 @@ pub struct TimerService {
     actor_handle: Option<JoinHandle<()>>,
     /// 时间轮 ID（用于验证所有句柄来自同一个时间轮）
     timer_wheel_id: TimerWheelId,
+    /// 时间轮操作发送端（用于直接调度定时器）
+    op_sender: Sender<WheelOperation>,
 }
 
 impl TimerService {
@@ -91,7 +95,7 @@ impl TimerService {
         let (command_tx, command_rx) = mpsc::channel(100);
         let (timeout_tx, timeout_rx) = mpsc::channel(1000);
 
-        let actor = ServiceActor::new(command_rx, timeout_tx, op_sender);
+        let actor = ServiceActor::new(command_rx, timeout_tx, op_sender.clone());
         let actor_handle = tokio::spawn(async move {
             actor.run().await;
         });
@@ -101,6 +105,7 @@ impl TimerService {
             timeout_rx,
             actor_handle: Some(actor_handle),
             timer_wheel_id,
+            op_sender,
         }
     }
 
@@ -286,6 +291,158 @@ impl TimerService {
             })
             .await
             .map_err(|_| TimerError::ChannelClosed)
+    }
+
+    /// 调度一次性定时器
+    ///
+    /// 创建定时器并自动添加到服务管理中，无需手动调用 add_timer_handle
+    ///
+    /// # 参数
+    /// - `delay`: 延迟时间
+    /// - `callback`: 实现了 TimerCallback trait 的回调对象
+    ///
+    /// # 返回
+    /// - `Ok(TaskId)`: 成功调度，返回任务ID
+    /// - `Err(TimerError)`: 调度失败
+    ///
+    /// # 示例
+    /// ```no_run
+    /// # use timer::TimerWheel;
+    /// # use std::time::Duration;
+    /// # #[tokio::main]
+    /// # async fn main() {
+    /// let timer = TimerWheel::with_defaults().unwrap();
+    /// let mut service = timer.create_service();
+    /// 
+    /// let task_id = service.schedule_once(Duration::from_millis(100), || async {
+    ///     println!("Timer fired!");
+    /// }).await.unwrap();
+    /// 
+    /// println!("Scheduled task: {:?}", task_id);
+    /// # }
+    /// ```
+    pub async fn schedule_once<C>(&mut self, delay: Duration, callback: C) -> Result<TaskId, TimerError>
+    where
+        C: TimerCallback,
+    {
+        // 创建任务并获取句柄
+        let handle = self.create_timer_handle(delay, Some(Arc::new(callback))).await?;
+        let task_id = handle.task_id();
+        
+        // 自动添加到服务管理
+        self.add_timer_handle(handle).await?;
+        
+        Ok(task_id)
+    }
+
+    /// 批量调度一次性定时器
+    ///
+    /// 批量创建定时器并自动添加到服务管理中
+    ///
+    /// # 参数
+    /// - `callbacks`: (延迟时间, 回调) 的元组列表
+    ///
+    /// # 返回
+    /// - `Ok(Vec<TaskId>)`: 成功调度，返回所有任务ID
+    /// - `Err(TimerError)`: 调度失败
+    ///
+    /// # 示例
+    /// ```no_run
+    /// # use timer::TimerWheel;
+    /// # use std::time::Duration;
+    /// # #[tokio::main]
+    /// # async fn main() {
+    /// let timer = TimerWheel::with_defaults().unwrap();
+    /// let mut service = timer.create_service();
+    /// 
+    /// let callbacks: Vec<_> = (0..3)
+    ///     .map(|i| (Duration::from_millis(100 * (i + 1)), move || async move {
+    ///         println!("Timer {} fired!", i);
+    ///     }))
+    ///     .collect();
+    /// 
+    /// let task_ids = service.schedule_once_batch(callbacks).await.unwrap();
+    /// println!("Scheduled {} tasks", task_ids.len());
+    /// # }
+    /// ```
+    pub async fn schedule_once_batch<C>(&mut self, callbacks: Vec<(Duration, C)>) -> Result<Vec<TaskId>, TimerError>
+    where
+        C: TimerCallback,
+    {
+        // 创建批量任务并获取句柄
+        let batch_handle = self.create_batch_handle(callbacks).await?;
+        let task_ids = batch_handle.task_ids().to_vec();
+        
+        // 自动添加到服务管理
+        self.add_batch_handle(batch_handle).await?;
+        
+        Ok(task_ids)
+    }
+
+    /// 调度一次性通知定时器（无回调，仅通知）
+    ///
+    /// 创建仅通知的定时器并自动添加到服务管理中
+    ///
+    /// # 参数
+    /// - `delay`: 延迟时间
+    ///
+    /// # 返回
+    /// - `Ok(TaskId)`: 成功调度，返回任务ID
+    /// - `Err(TimerError)`: 调度失败
+    ///
+    /// # 示例
+    /// ```no_run
+    /// # use timer::TimerWheel;
+    /// # use std::time::Duration;
+    /// # #[tokio::main]
+    /// # async fn main() {
+    /// let timer = TimerWheel::with_defaults().unwrap();
+    /// let mut service = timer.create_service();
+    /// 
+    /// let task_id = service.schedule_once_notify(Duration::from_millis(100)).await.unwrap();
+    /// println!("Scheduled notify task: {:?}", task_id);
+    /// 
+    /// // 可以通过 timeout_receiver 接收超时通知
+    /// # }
+    /// ```
+    pub async fn schedule_once_notify(&mut self, delay: Duration) -> Result<TaskId, TimerError> {
+        // 创建无回调任务并获取句柄
+        let handle = self.create_timer_handle(delay, None).await?;
+        let task_id = handle.task_id();
+        
+        // 自动添加到服务管理
+        self.add_timer_handle(handle).await?;
+        
+        Ok(task_id)
+    }
+
+    /// 内部方法：创建定时器句柄
+    async fn create_timer_handle(
+        &self,
+        delay: Duration,
+        callback: Option<CallbackWrapper>,
+    ) -> Result<TimerHandle, TimerError> {
+        crate::timer::TimerWheel::create_timer_handle_internal(
+            self.timer_wheel_id,
+            &self.op_sender,
+            delay,
+            callback
+        ).await
+    }
+
+    /// 内部方法：创建批量定时器句柄
+    async fn create_batch_handle<C>(
+        &self,
+        callbacks: Vec<(Duration, C)>,
+    ) -> Result<BatchHandle, TimerError>
+    where
+        C: TimerCallback,
+    {
+        crate::timer::TimerWheel::create_batch_handle_internal(
+            self.timer_wheel_id,
+            &self.op_sender,
+            callbacks
+        ).await
     }
 
     /// 优雅关闭 TimerService
@@ -841,6 +998,126 @@ mod tests {
         // 验证任务已从 active_tasks 中移除
         let cancelled_again = service.cancel_task(task_id).await.unwrap();
         assert!(!cancelled_again, "Task should have been removed from active_tasks");
+    }
+
+    #[tokio::test]
+    async fn test_schedule_once_direct() {
+        let timer = TimerWheel::with_defaults().unwrap();
+        let mut service = timer.create_service();
+        let counter = Arc::new(AtomicU32::new(0));
+
+        // 直接通过 service 调度定时器
+        let counter_clone = Arc::clone(&counter);
+        let task_id = service.schedule_once(
+            Duration::from_millis(50),
+            move || {
+                let counter = Arc::clone(&counter_clone);
+                async move {
+                    counter.fetch_add(1, Ordering::SeqCst);
+                }
+            },
+        ).await.unwrap();
+
+        // 等待定时器触发
+        let rx = service.timeout_receiver();
+        let received_task_id = tokio::time::timeout(Duration::from_millis(200), rx.recv())
+            .await
+            .expect("Should receive timeout notification")
+            .expect("Should receive Some value");
+
+        assert_eq!(received_task_id, task_id);
+        
+        // 等待回调执行
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert_eq!(counter.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn test_schedule_once_batch_direct() {
+        let timer = TimerWheel::with_defaults().unwrap();
+        let mut service = timer.create_service();
+        let counter = Arc::new(AtomicU32::new(0));
+
+        // 直接通过 service 批量调度定时器
+        let callbacks: Vec<_> = (0..3)
+            .map(|_| {
+                let counter = Arc::clone(&counter);
+                (Duration::from_millis(50), move || {
+                    let counter = Arc::clone(&counter);
+                    async move {
+                        counter.fetch_add(1, Ordering::SeqCst);
+                    }
+                })
+            })
+            .collect();
+
+        let task_ids = service.schedule_once_batch(callbacks).await.unwrap();
+        assert_eq!(task_ids.len(), 3);
+
+        // 接收所有超时通知
+        let mut received_count = 0;
+        let rx = service.timeout_receiver();
+        
+        while received_count < 3 {
+            match tokio::time::timeout(Duration::from_millis(200), rx.recv()).await {
+                Ok(Some(_task_id)) => {
+                    received_count += 1;
+                }
+                Ok(None) => break,
+                Err(_) => break,
+            }
+        }
+
+        assert_eq!(received_count, 3);
+        
+        // 等待回调执行
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert_eq!(counter.load(Ordering::SeqCst), 3);
+    }
+
+    #[tokio::test]
+    async fn test_schedule_once_notify_direct() {
+        let timer = TimerWheel::with_defaults().unwrap();
+        let mut service = timer.create_service();
+
+        // 直接通过 service 调度仅通知的定时器
+        let task_id = service.schedule_once_notify(Duration::from_millis(50)).await.unwrap();
+
+        // 接收超时通知
+        let rx = service.timeout_receiver();
+        let received_task_id = tokio::time::timeout(Duration::from_millis(200), rx.recv())
+            .await
+            .expect("Should receive timeout notification")
+            .expect("Should receive Some value");
+
+        assert_eq!(received_task_id, task_id);
+    }
+
+    #[tokio::test]
+    async fn test_schedule_and_cancel_direct() {
+        let timer = TimerWheel::with_defaults().unwrap();
+        let mut service = timer.create_service();
+        let counter = Arc::new(AtomicU32::new(0));
+
+        // 直接调度定时器
+        let counter_clone = Arc::clone(&counter);
+        let task_id = service.schedule_once(
+            Duration::from_secs(10),
+            move || {
+                let counter = Arc::clone(&counter_clone);
+                async move {
+                    counter.fetch_add(1, Ordering::SeqCst);
+                }
+            },
+        ).await.unwrap();
+
+        // 立即取消
+        let cancelled = service.cancel_task(task_id).await.unwrap();
+        assert!(cancelled, "Task should be cancelled successfully");
+
+        // 等待确保回调不会执行
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert_eq!(counter.load(Ordering::SeqCst), 0, "Callback should not have been executed");
     }
 }
 

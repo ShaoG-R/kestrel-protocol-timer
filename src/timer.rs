@@ -46,7 +46,7 @@ pub struct TimerHandle {
 }
 
 impl TimerHandle {
-    fn new(task_id: TaskId, timer_wheel_id: TimerWheelId, op_sender: Sender<WheelOperation>, completion_rx: oneshot::Receiver<()>) -> Self {
+    pub(crate) fn new(task_id: TaskId, timer_wheel_id: TimerWheelId, op_sender: Sender<WheelOperation>, completion_rx: oneshot::Receiver<()>) -> Self {
         Self { task_id, timer_wheel_id, op_sender, completion_rx: CompletionReceiver(completion_rx) }
     }
 
@@ -173,7 +173,7 @@ pub struct BatchHandle {
 }
 
 impl BatchHandle {
-    fn new(task_ids: Vec<TaskId>, timer_wheel_id: TimerWheelId, op_sender: Sender<WheelOperation>, completion_rxs: Vec<oneshot::Receiver<()>>) -> Self {
+    pub(crate) fn new(task_ids: Vec<TaskId>, timer_wheel_id: TimerWheelId, op_sender: Sender<WheelOperation>, completion_rxs: Vec<oneshot::Receiver<()>>) -> Self {
         Self { task_ids, timer_wheel_id, op_sender, completion_rxs }
     }
 
@@ -488,6 +488,67 @@ impl TimerWheel {
         crate::service::TimerService::new(self.wheel_id, self.op_sender.clone())
     }
 
+    /// 内部辅助方法：创建定时器句柄
+    /// 
+    /// 由 TimerWheel 和 TimerService 共用
+    pub(crate) async fn create_timer_handle_internal(
+        wheel_id: TimerWheelId,
+        op_sender: &Sender<WheelOperation>,
+        delay: Duration,
+        callback: Option<CallbackWrapper>,
+    ) -> Result<TimerHandle, TimerError> {
+        let (tx, rx) = oneshot::channel();
+        let (completion_tx, completion_rx) = oneshot::channel();
+        let notifier = CompletionNotifier(completion_tx);
+        
+        let task = TimerTask::once(0, 0, callback, notifier);
+        
+        op_sender.send(WheelOperation::Insert {
+            delay,
+            task,
+            result_tx: tx,
+        }).map_err(|_| TimerError::ChannelClosed)?;
+        
+        let task_id = rx.await.map_err(|_| TimerError::ChannelClosed)?;
+        Ok(TimerHandle::new(task_id, wheel_id, op_sender.clone(), completion_rx))
+    }
+
+    /// 内部辅助方法：创建批量定时器句柄
+    /// 
+    /// 由 TimerWheel 和 TimerService 共用
+    pub(crate) async fn create_batch_handle_internal<C>(
+        wheel_id: TimerWheelId,
+        op_sender: &Sender<WheelOperation>,
+        callbacks: Vec<(Duration, C)>,
+    ) -> Result<BatchHandle, TimerError>
+    where
+        C: TimerCallback,
+    {
+        use std::sync::Arc;
+        let (tx, rx) = oneshot::channel();
+        let mut completion_rxs = Vec::with_capacity(callbacks.len());
+        
+        let tasks: Vec<(Duration, TimerTask)> = callbacks
+            .into_iter()
+            .map(|(delay, callback)| {
+                let callback_wrapper = Arc::new(callback) as CallbackWrapper;
+                let (completion_tx, completion_rx) = oneshot::channel();
+                completion_rxs.push(completion_rx);
+                let notifier = CompletionNotifier(completion_tx);
+                let task = TimerTask::once(0, 0, Some(callback_wrapper), notifier);
+                (delay, task)
+            })
+            .collect();
+        
+        op_sender.send(WheelOperation::InsertBatch {
+            tasks,
+            result_tx: tx,
+        }).map_err(|_| TimerError::ChannelClosed)?;
+        
+        let task_ids = rx.await.map_err(|_| TimerError::ChannelClosed)?;
+        Ok(BatchHandle::new(task_ids, wheel_id, op_sender.clone(), completion_rxs))
+    }
+
     /// 调度一次性定时器
     ///
     /// # 参数
@@ -520,23 +581,8 @@ impl TimerWheel {
         C: TimerCallback,
     {
         use std::sync::Arc;
-        let (tx, rx) = oneshot::channel();
         let callback_wrapper = Arc::new(callback) as CallbackWrapper;
-        
-        // 创建完成通知 channel
-        let (completion_tx, completion_rx) = oneshot::channel();
-        let notifier = CompletionNotifier(completion_tx);
-        
-        let task = TimerTask::once(0, 0, Some(callback_wrapper), notifier);
-        
-        let _ = self.op_sender.send(WheelOperation::Insert {
-            delay,
-            task,
-            result_tx: tx,
-        });
-        
-        let task_id = rx.await.map_err(|_| TimerError::ChannelClosed)?;
-        Ok(TimerHandle::new(task_id, self.wheel_id, self.op_sender.clone(), completion_rx))
+        Self::create_timer_handle_internal(self.wheel_id, &self.op_sender, delay, Some(callback_wrapper)).await
     }
 
     /// 批量调度一次性定时器
@@ -597,35 +643,7 @@ impl TimerWheel {
     where
         C: TimerCallback,
     {
-        use std::sync::Arc;
-        let (tx, rx) = oneshot::channel();
-        
-        // 为每个任务创建完成通知 channel
-        let mut completion_rxs = Vec::with_capacity(callbacks.len());
-        
-        // 将回调转换为 TimerTask
-        let tasks: Vec<(Duration, TimerTask)> = callbacks
-            .into_iter()
-            .map(|(delay, callback)| {
-                let callback_wrapper = Arc::new(callback) as CallbackWrapper;
-                
-                // 创建完成通知 channel
-                let (completion_tx, completion_rx) = oneshot::channel();
-                completion_rxs.push(completion_rx);
-                let notifier = CompletionNotifier(completion_tx);
-                
-                let task = TimerTask::once(0, 0, Some(callback_wrapper), notifier);
-                (delay, task)
-            })
-            .collect();
-        
-        let _ = self.op_sender.send(WheelOperation::InsertBatch {
-            tasks,
-            result_tx: tx,
-        });
-        
-        let task_ids = rx.await.map_err(|_| TimerError::ChannelClosed)?;
-        Ok(BatchHandle::new(task_ids, self.wheel_id, self.op_sender.clone(), completion_rxs))
+        Self::create_batch_handle_internal(self.wheel_id, &self.op_sender, callbacks).await
     }
 
 
@@ -655,23 +673,7 @@ impl TimerWheel {
     /// }
     /// ```
     pub async fn schedule_once_notify(&self, delay: Duration) -> Result<TimerHandle, TimerError> {
-        let (tx, rx) = oneshot::channel();
-        
-        // 创建完成通知 channel
-        let (completion_tx, completion_rx) = oneshot::channel();
-        let notifier = CompletionNotifier(completion_tx);
-        
-        // 无回调的任务
-        let task = TimerTask::once(0, 0, None, notifier);
-        
-        let _ = self.op_sender.send(WheelOperation::Insert {
-            delay,
-            task,
-            result_tx: tx,
-        });
-        
-        let task_id = rx.await.map_err(|_| TimerError::ChannelClosed)?;
-        Ok(TimerHandle::new(task_id, self.wheel_id, self.op_sender.clone(), completion_rx))
+        Self::create_timer_handle_internal(self.wheel_id, &self.op_sender, delay, None).await
     }
 
     /// 取消定时器（异步获取结果）
