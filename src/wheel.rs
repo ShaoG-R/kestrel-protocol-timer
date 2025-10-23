@@ -2,6 +2,7 @@ use crate::error::TimerError;
 use crate::task::{TaskId, TaskLocation, TimerTask};
 use rustc_hash::FxHashMap;
 use std::time::Duration;
+use smallvec::SmallVec;
 
 /// 时间轮数据结构
 pub struct Wheel {
@@ -222,11 +223,9 @@ impl Wheel {
         }
         
         // 按槽位分组以优化批量取消
-        // 使用 with_capacity 预分配，避免重复扩容
-        let mut tasks_by_slot: Vec<Vec<(TaskId, usize)>> = Vec::with_capacity(self.slot_count);
-        for _ in 0..self.slot_count {
-            tasks_by_slot.push(Vec::new());
-        }
+        // 使用 SmallVec 避免大多数情况下的堆分配
+        let mut tasks_by_slot: Vec<SmallVec<[(TaskId, usize); 4]>> = 
+            vec![SmallVec::new(); self.slot_count];
         
         // 收集需要取消的任务信息
         for &task_id in task_ids {
@@ -279,33 +278,44 @@ impl Wheel {
         self.current_tick += 1;
         let slot_index = (self.current_tick as usize) & (self.slot_count - 1);
 
-        // 取出当前槽位的所有任务
-        let mut tasks = std::mem::take(&mut self.slots[slot_index]);
+        // 直接获取槽位的可变引用，避免内存交换
+        let slot = &mut self.slots[slot_index];
+        
+        // 预分配容量以减少重新分配
         let mut expired_tasks = Vec::new();
-        let mut pending_tasks = Vec::new();
-
-        for mut task in tasks.drain(..) {
-            // 从索引中移除
-            self.task_index.remove(&task.id);
-
+        
+        // 使用反向迭代 + swap_remove 避免频繁移动元素
+        let mut i = 0;
+        while i < slot.len() {
+            let task = &mut slot[i];
+            
             if task.rounds > 0 {
-                // 还有轮次，减少轮次并重新插入
+                // 还有轮次，减少轮次，任务保持在原位
                 task.rounds -= 1;
-                let task_id = task.id;
-                
-                // 记录任务在 pending_tasks 中的索引位置
-                let vec_index = pending_tasks.len();
-                let location = TaskLocation::new(slot_index, vec_index, task_id);
-                self.task_index.insert(task_id, location);
-                pending_tasks.push(task);
+                // 更新索引中的位置（可能因为之前的移除而改变）
+                if let Some(location) = self.task_index.get_mut(&task.id) {
+                    location.vec_index = i;
+                }
+                i += 1;
             } else {
-                // 已到期
-                expired_tasks.push(task);
+                // 任务已到期，从索引中移除
+                self.task_index.remove(&task.id);
+                
+                // 使用 swap_remove 移除任务（O(1) 操作）
+                let expired_task = slot.swap_remove(i);
+                
+                // 如果 swap 发生了（即不是最后一个元素），更新被交换元素的索引
+                if i < slot.len() {
+                    let swapped_task_id = slot[i].id;
+                    if let Some(swapped_location) = self.task_index.get_mut(&swapped_task_id) {
+                        swapped_location.vec_index = i;
+                    }
+                }
+                
+                expired_tasks.push(expired_task);
+                // 不增加 i，因为 swap_remove 将后面的元素移到了当前位置
             }
         }
-
-        // 将未到期的任务放回槽位
-        self.slots[slot_index] = pending_tasks;
 
         expired_tasks
     }

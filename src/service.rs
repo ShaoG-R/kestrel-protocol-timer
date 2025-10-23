@@ -4,6 +4,7 @@ use crate::error::TimerError;
 use crossbeam::channel::Sender;
 use futures::stream::{FuturesUnordered, StreamExt};
 use futures::future::BoxFuture;
+use rustc_hash::FxHashSet;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{mpsc, oneshot};
@@ -602,8 +603,8 @@ struct ServiceActor {
     timeout_tx: mpsc::Sender<TaskId>,
     /// 操作发送端（用于取消操作等）
     op_sender: Sender<WheelOperation>,
-    /// 活跃任务ID集合
-    active_tasks: std::collections::HashSet<TaskId>,
+    /// 活跃任务ID集合（使用 FxHashSet 提升性能）
+    active_tasks: FxHashSet<TaskId>,
     /// 内部通知接收端（用于移除已取消的任务）
     remove_task_rx: mpsc::Receiver<TaskId>,
     /// 内部通知发送端（用于移除已取消的任务）
@@ -617,7 +618,7 @@ impl ServiceActor {
             command_rx,
             timeout_tx,
             op_sender,
-            active_tasks: std::collections::HashSet::new(),
+            active_tasks: FxHashSet::default(),
             remove_task_rx,
             remove_task_tx,
         }

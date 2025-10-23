@@ -786,11 +786,26 @@ impl TimerWheel {
         let mut interval = tokio::time::interval(tick_duration);
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
+        // 批量操作缓冲区，减少通道读取次数
+        const BATCH_SIZE: usize = 32;
+        let mut op_batch = Vec::with_capacity(BATCH_SIZE);
+
         loop {
             interval.tick().await;
 
-            // 1. 处理队列中的所有操作
-            while let Ok(op) = op_receiver.try_recv() {
+            // 1. 批量处理队列中的所有操作
+            op_batch.clear();
+            
+            // 尽可能多地收集操作，但不超过 BATCH_SIZE
+            while op_batch.len() < BATCH_SIZE {
+                match op_receiver.try_recv() {
+                    Ok(op) => op_batch.push(op),
+                    Err(_) => break,
+                }
+            }
+            
+            // 批量处理所有收集到的操作
+            for op in op_batch.drain(..) {
                 match op {
                     WheelOperation::Insert { delay, task, result_tx } => {
                         let task_id = wheel.insert(delay, task);
