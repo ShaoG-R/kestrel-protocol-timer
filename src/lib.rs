@@ -56,7 +56,7 @@ mod wheel;
 mod timer;
 
 // 重新导出公共 API
-pub use task::{CallbackWrapper, TaskId, TimerCallback};
+pub use task::{CallbackWrapper, TaskId, TaskType, TimerCallback};
 pub use timer::{TimerHandle, TimerWheel};
 
 #[cfg(test)]

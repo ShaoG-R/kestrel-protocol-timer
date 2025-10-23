@@ -193,7 +193,8 @@ impl TimerWheel {
             // 执行到期任务
             for task in expired_tasks {
                 let callback = task.get_callback();
-                let repeat_interval = task.repeat_interval;
+                let is_repeat = task.is_repeat();
+                let interval = task.interval();
                 
                 // 在独立的 tokio 任务中执行回调，避免阻塞时间轮
                 tokio::spawn(async move {
@@ -202,10 +203,12 @@ impl TimerWheel {
                 });
 
                 // 如果是周期性任务，重新调度
-                if let Some(interval) = repeat_interval {
-                    let mut wheel_guard = wheel.lock();
-                    let new_task = task.clone_for_repeat(0, 0);
-                    wheel_guard.insert(interval, new_task);
+                if is_repeat {
+                    if let Some(interval) = interval {
+                        let mut wheel_guard = wheel.lock();
+                        let new_task = task.clone_for_repeat(0, 0);
+                        wheel_guard.insert(interval, new_task);
+                    }
                 }
             }
         }

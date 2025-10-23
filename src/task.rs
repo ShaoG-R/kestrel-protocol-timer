@@ -70,6 +70,34 @@ where
 /// 回调包装器类型
 pub type CallbackWrapper = Arc<dyn TimerCallback>;
 
+/// 定时器任务类型
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TaskType {
+    /// 一次性任务
+    Once,
+    
+    /// 周期性任务
+    Repeat {
+        /// 重复间隔
+        interval: Duration,
+    },
+}
+
+impl TaskType {
+    /// 检查是否是周期性任务
+    pub fn is_repeat(&self) -> bool {
+        matches!(self, TaskType::Repeat { .. })
+    }
+
+    /// 获取重复间隔（如果是周期性任务）
+    pub fn interval(&self) -> Option<Duration> {
+        match self {
+            TaskType::Repeat { interval } => Some(*interval),
+            TaskType::Once => None,
+        }
+    }
+}
+
 /// 定时器任务
 pub struct TimerTask {
     /// 任务唯一标识符
@@ -84,8 +112,8 @@ pub struct TimerTask {
     /// 异步回调函数（使用 Arc 可以共享，支持周期性任务）
     pub callback: CallbackWrapper,
     
-    /// 周期性任务的间隔（None 表示一次性任务）
-    pub repeat_interval: Option<Duration>,
+    /// 任务类型（一次性或周期性）
+    pub task_type: TaskType,
 }
 
 impl TimerTask {
@@ -100,7 +128,7 @@ impl TimerTask {
             deadline_tick,
             rounds,
             callback,
-            repeat_interval: None,
+            task_type: TaskType::Once,
         }
     }
 
@@ -116,14 +144,18 @@ impl TimerTask {
             deadline_tick,
             rounds,
             callback,
-            repeat_interval: Some(interval),
+            task_type: TaskType::Repeat { interval },
         }
     }
 
     /// 检查是否是周期性任务
-    #[allow(dead_code)]
     pub fn is_repeat(&self) -> bool {
-        self.repeat_interval.is_some()
+        self.task_type.is_repeat()
+    }
+
+    /// 获取重复间隔（如果是周期性任务）
+    pub fn interval(&self) -> Option<Duration> {
+        self.task_type.interval()
     }
 
     /// 获取回调函数的克隆（用于周期性任务）
@@ -138,7 +170,7 @@ impl TimerTask {
             deadline_tick: new_deadline_tick,
             rounds: new_rounds,
             callback: Arc::clone(&self.callback),
-            repeat_interval: self.repeat_interval,
+            task_type: self.task_type,
         }
     }
 }
