@@ -156,11 +156,6 @@ impl Wheel {
         expired_tasks
     }
 
-    /// 获取当前活跃的任务数量
-    pub fn task_count(&self) -> usize {
-        self.task_index.len()
-    }
-
     /// 检查时间轮是否为空
     #[allow(dead_code)]
     pub fn is_empty(&self) -> bool {

@@ -1,28 +1,89 @@
 use crate::task::{CallbackWrapper, TaskId, TimerCallback, TimerTask};
 use crate::wheel::Wheel;
-use parking_lot::Mutex;
-use std::sync::Arc;
+use crossbeam::channel::{Sender, Receiver};
 use std::time::Duration;
+use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
+
+/// 时间轮操作类型
+enum WheelOperation {
+    /// 插入定时器任务
+    Insert {
+        delay: Duration,
+        task: TimerTask,
+        result_tx: oneshot::Sender<TaskId>,
+    },
+    /// 取消定时器任务
+    Cancel {
+        task_id: TaskId,
+        result_tx: Option<oneshot::Sender<bool>>,
+    },
+}
 
 /// 定时器句柄，用于管理定时器的生命周期
 #[derive(Clone)]
 pub struct TimerHandle {
     task_id: TaskId,
-    wheel: Arc<Mutex<Wheel>>,
+    op_sender: Sender<WheelOperation>,
 }
 
 impl TimerHandle {
-    fn new(task_id: TaskId, wheel: Arc<Mutex<Wheel>>) -> Self {
-        Self { task_id, wheel }
+    fn new(task_id: TaskId, op_sender: Sender<WheelOperation>) -> Self {
+        Self { task_id, op_sender }
     }
 
-    /// 取消定时器
+    /// 取消定时器（异步获取结果）
     ///
     /// # 返回
+    /// oneshot::Receiver<bool>，可通过 await 获取取消结果
     /// 如果任务存在且成功取消返回 true，否则返回 false
-    pub fn cancel(&self) -> bool {
-        self.wheel.lock().cancel(self.task_id)
+    ///
+    /// # 示例
+    /// ```no_run
+    /// # use timer::TimerWheel;
+    /// # use std::time::Duration;
+    /// # #[tokio::main]
+    /// # async fn main() {
+    /// let timer = TimerWheel::with_defaults();
+    /// let handle = timer.schedule_once(Duration::from_secs(1), || async {}).await;
+    /// 
+    /// // 等待取消结果
+    /// let success = handle.cancel().await.unwrap();
+    /// println!("取消成功: {}", success);
+    /// # }
+    /// ```
+    pub fn cancel(&self) -> oneshot::Receiver<bool> {
+        let (tx, rx) = oneshot::channel();
+        let _ = self.op_sender.send(WheelOperation::Cancel {
+            task_id: self.task_id,
+            result_tx: Some(tx),
+        });
+        rx
+    }
+
+    /// 取消定时器（无需等待结果）
+    ///
+    /// 立即发送取消请求并返回，不等待取消结果。
+    /// 适用于不关心取消是否成功的场景，性能更好。
+    ///
+    /// # 示例
+    /// ```no_run
+    /// # use timer::TimerWheel;
+    /// # use std::time::Duration;
+    /// # #[tokio::main]
+    /// # async fn main() {
+    /// let timer = TimerWheel::with_defaults();
+    /// let handle = timer.schedule_once(Duration::from_secs(1), || async {}).await;
+    /// 
+    /// // 立即发送取消请求，不等待结果
+    /// handle.cancel_no_wait();
+    /// # }
+    /// ```
+    pub fn cancel_no_wait(&self) {
+        let _ = self.op_sender.send(WheelOperation::Cancel {
+            task_id: self.task_id,
+            result_tx: None,
+        });
     }
 
     /// 获取任务 ID
@@ -33,8 +94,8 @@ impl TimerHandle {
 
 /// 时间轮定时器管理器
 pub struct TimerWheel {
-    /// 时间轮（使用 Arc<Mutex> 保证线程安全）
-    wheel: Arc<Mutex<Wheel>>,
+    /// 操作队列发送端
+    op_sender: Sender<WheelOperation>,
     
     /// 后台 tick 循环任务句柄
     tick_handle: Option<JoinHandle<()>>,
@@ -58,16 +119,16 @@ impl TimerWheel {
     /// }
     /// ```
     pub fn new(tick_duration: Duration, slot_count: usize) -> Self {
-        let wheel = Arc::new(Mutex::new(Wheel::new(tick_duration, slot_count)));
-        let wheel_clone = Arc::clone(&wheel);
+        let wheel = Wheel::new(tick_duration, slot_count);
+        let (op_sender, op_receiver) = crossbeam::channel::unbounded();
 
         // 启动后台 tick 循环
         let tick_handle = tokio::spawn(async move {
-            Self::tick_loop(wheel_clone, tick_duration).await;
+            Self::tick_loop(wheel, op_receiver, tick_duration).await;
         });
 
         Self {
-            wheel,
+            op_sender,
             tick_handle: Some(tick_handle),
         }
     }
@@ -100,20 +161,28 @@ impl TimerWheel {
     ///     
     ///     let handle = timer.schedule_once(Duration::from_secs(1), || async {
     ///         println!("Timer fired!");
-    ///     });
+    ///     }).await;
     ///     
     ///     tokio::time::sleep(Duration::from_secs(2)).await;
     /// }
     /// ```
-    pub fn schedule_once<C>(&self, delay: Duration, callback: C) -> TimerHandle
+    pub async fn schedule_once<C>(&self, delay: Duration, callback: C) -> TimerHandle
     where
         C: TimerCallback,
     {
-        let mut wheel = self.wheel.lock();
+        use std::sync::Arc;
+        let (tx, rx) = oneshot::channel();
         let callback_wrapper = Arc::new(callback) as CallbackWrapper;
         let task = TimerTask::once(0, 0, callback_wrapper);
-        let task_id = wheel.insert(delay, task);
-        TimerHandle::new(task_id, Arc::clone(&self.wheel))
+        
+        let _ = self.op_sender.send(WheelOperation::Insert {
+            delay,
+            task,
+            result_tx: tx,
+        });
+        
+        let task_id = rx.await.expect("Failed to receive task ID");
+        TimerHandle::new(task_id, self.op_sender.clone())
     }
 
     /// 调度周期性定时器
@@ -144,57 +213,94 @@ impl TimerWheel {
     ///             let count = counter.fetch_add(1, Ordering::SeqCst);
     ///             println!("Periodic timer fired! Count: {}", count + 1);
     ///         }
-    ///     });
+    ///     }).await;
     ///     
     ///     tokio::time::sleep(Duration::from_secs(5)).await;
     /// }
     /// ```
-    pub fn schedule_repeat<C>(&self, interval: Duration, callback: C) -> TimerHandle
+    pub async fn schedule_repeat<C>(&self, interval: Duration, callback: C) -> TimerHandle
     where
         C: TimerCallback,
     {
-        let mut wheel = self.wheel.lock();
+        use std::sync::Arc;
+        let (tx, rx) = oneshot::channel();
         let callback_wrapper = Arc::new(callback) as CallbackWrapper;
         let task = TimerTask::repeat(0, 0, interval, callback_wrapper);
-        let task_id = wheel.insert(interval, task);
-        TimerHandle::new(task_id, Arc::clone(&self.wheel))
+        
+        let _ = self.op_sender.send(WheelOperation::Insert {
+            delay: interval,
+            task,
+            result_tx: tx,
+        });
+        
+        let task_id = rx.await.expect("Failed to receive task ID");
+        TimerHandle::new(task_id, self.op_sender.clone())
     }
 
-    /// 取消定时器
+    /// 取消定时器（异步获取结果）
     ///
     /// # 参数
     /// - `task_id`: 任务 ID
     ///
     /// # 返回
+    /// oneshot::Receiver<bool>，可通过 await 获取取消结果
     /// 如果任务存在且成功取消返回 true，否则返回 false
-    pub fn cancel(&self, task_id: TaskId) -> bool {
-        self.wheel.lock().cancel(task_id)
+    pub fn cancel(&self, task_id: TaskId) -> oneshot::Receiver<bool> {
+        let (tx, rx) = oneshot::channel();
+        let _ = self.op_sender.send(WheelOperation::Cancel {
+            task_id,
+            result_tx: Some(tx),
+        });
+        rx
     }
 
-    /// 获取当前活跃的定时器数量
-    pub fn task_count(&self) -> usize {
-        self.wheel.lock().task_count()
+    /// 取消定时器（无需等待结果）
+    ///
+    /// # 参数
+    /// - `task_id`: 任务 ID
+    ///
+    /// 立即发送取消请求并返回，不等待取消结果。
+    /// 适用于不关心取消是否成功的场景，性能更好。
+    pub fn cancel_no_wait(&self, task_id: TaskId) {
+        let _ = self.op_sender.send(WheelOperation::Cancel {
+            task_id,
+            result_tx: None,
+        });
     }
-
+    
     /// 核心 tick 循环
-    async fn tick_loop(wheel: Arc<Mutex<Wheel>>, tick_duration: Duration) {
+    async fn tick_loop(mut wheel: Wheel, op_receiver: Receiver<WheelOperation>, tick_duration: Duration) {
         let mut interval = tokio::time::interval(tick_duration);
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
         loop {
             interval.tick().await;
 
-            // 推进时间轮并获取到期任务
-            let expired_tasks = {
-                let mut wheel_guard = wheel.lock();
-                wheel_guard.advance()
-            };
+            // 1. 处理队列中的所有操作
+            while let Ok(op) = op_receiver.try_recv() {
+                match op {
+                    WheelOperation::Insert { delay, task, result_tx } => {
+                        let task_id = wheel.insert(delay, task);
+                        let _ = result_tx.send(task_id);
+                    }
+                    WheelOperation::Cancel { task_id, result_tx } => {
+                        let success = wheel.cancel(task_id);
+                        // 只在需要返回结果时才发送
+                        if let Some(tx) = result_tx {
+                            let _ = tx.send(success);
+                        }
+                    }
+                }
+            }
 
-            // 执行到期任务
+            // 2. 推进时间轮并获取到期任务
+            let expired_tasks = wheel.advance();
+
+            // 3. 执行到期任务
             for task in expired_tasks {
                 let callback = task.get_callback();
                 let is_repeat = task.is_repeat();
-                let interval = task.interval();
+                let task_interval = task.interval();
                 
                 // 在独立的 tokio 任务中执行回调，避免阻塞时间轮
                 tokio::spawn(async move {
@@ -202,12 +308,11 @@ impl TimerWheel {
                     future.await;
                 });
 
-                // 如果是周期性任务，重新调度
+                // 4. 如果是周期性任务，直接重新调度（无需通过队列）
                 if is_repeat {
-                    if let Some(interval) = interval {
-                        let mut wheel_guard = wheel.lock();
+                    if let Some(interval) = task_interval {
                         let new_task = task.clone_for_repeat(0, 0);
-                        wheel_guard.insert(interval, new_task);
+                        wheel.insert(interval, new_task);
                     }
                 }
             }
@@ -238,12 +343,12 @@ mod tests {
 
     #[tokio::test]
     async fn test_timer_creation() {
-        let timer = TimerWheel::with_defaults();
-        assert_eq!(timer.task_count(), 0);
+        let _timer = TimerWheel::with_defaults();
     }
 
     #[tokio::test]
     async fn test_schedule_once() {
+        use std::sync::Arc;
         let timer = TimerWheel::with_defaults();
         let counter = Arc::new(AtomicU32::new(0));
         let counter_clone = Arc::clone(&counter);
@@ -256,7 +361,7 @@ mod tests {
                     counter.fetch_add(1, Ordering::SeqCst);
                 }
             },
-        );
+        ).await;
 
         // 等待定时器触发
         tokio::time::sleep(Duration::from_millis(100)).await;
@@ -265,6 +370,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_cancel_timer() {
+        use std::sync::Arc;
         let timer = TimerWheel::with_defaults();
         let counter = Arc::new(AtomicU32::new(0));
         let counter_clone = Arc::clone(&counter);
@@ -277,10 +383,36 @@ mod tests {
                     counter.fetch_add(1, Ordering::SeqCst);
                 }
             },
-        );
+        ).await;
 
-        // 立即取消
-        assert!(handle.cancel());
+        // 立即取消（等待结果）
+        let cancel_result = handle.cancel().await.unwrap();
+        assert!(cancel_result);
+
+        // 等待足够长时间确保定时器不会触发
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        assert_eq!(counter.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn test_cancel_no_wait() {
+        use std::sync::Arc;
+        let timer = TimerWheel::with_defaults();
+        let counter = Arc::new(AtomicU32::new(0));
+        let counter_clone = Arc::clone(&counter);
+
+        let handle = timer.schedule_once(
+            Duration::from_millis(100),
+            move || {
+                let counter = Arc::clone(&counter_clone);
+                async move {
+                    counter.fetch_add(1, Ordering::SeqCst);
+                }
+            },
+        ).await;
+
+        // 立即取消（无需等待结果）
+        handle.cancel_no_wait();
 
         // 等待足够长时间确保定时器不会触发
         tokio::time::sleep(Duration::from_millis(200)).await;

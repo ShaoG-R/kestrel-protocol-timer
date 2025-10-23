@@ -80,7 +80,7 @@ mod tests {
                     counter.fetch_add(1, Ordering::SeqCst);
                 }
             },
-        );
+        ).await;
 
         tokio::time::sleep(Duration::from_millis(100)).await;
         assert_eq!(counter.load(Ordering::SeqCst), 1);
@@ -102,7 +102,7 @@ mod tests {
                         counter.fetch_add(1, Ordering::SeqCst);
                     }
                 },
-            );
+            ).await;
         }
 
         tokio::time::sleep(Duration::from_millis(200)).await;
@@ -126,13 +126,14 @@ mod tests {
                         counter.fetch_add(1, Ordering::SeqCst);
                     }
                 },
-            );
+            ).await;
             handles.push(handle);
         }
 
         // 取消前 3 个定时器
         for i in 0..3 {
-            assert!(handles[i].cancel());
+            let cancel_result = handles[i].cancel().await.unwrap();
+            assert!(cancel_result);
         }
 
         tokio::time::sleep(Duration::from_millis(200)).await;

@@ -2,34 +2,43 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use timer::TimerWheel;
+use futures::future;
 
 #[tokio::test]
 async fn test_large_scale_timers() {
     // 测试大规模并发定时器（10000+ 个）
-    let timer = TimerWheel::with_defaults();
+    let timer = Arc::new(TimerWheel::with_defaults());
     let counter = Arc::new(AtomicU32::new(0));
     const TIMER_COUNT: u32 = 10_000;
 
     let start = Instant::now();
 
-    // 创建 10000 个定时器
+    // 并发创建 10000 个定时器
+    let mut futures = Vec::new();
     for i in 0..TIMER_COUNT {
+        let timer_clone = Arc::clone(&timer);
         let counter_clone = Arc::clone(&counter);
         let delay = Duration::from_millis(10 + (i % 100) as u64);
         
-        timer.schedule_once(
-            delay,
-            move || {
-                let counter = Arc::clone(&counter_clone);
-                async move {
-                    counter.fetch_add(1, Ordering::SeqCst);
-                }
-            },
-        );
+        let future = async move {
+            timer_clone.schedule_once(
+                delay,
+                move || {
+                    let counter = Arc::clone(&counter_clone);
+                    async move {
+                        counter.fetch_add(1, Ordering::SeqCst);
+                    }
+                },
+            ).await
+        };
+        futures.push(future);
     }
 
+    // 并发等待所有定时器创建完成
+    future::join_all(futures).await;
+
     println!("创建 {} 个定时器耗时: {:?}", TIMER_COUNT, start.elapsed());
-    println!("当前活跃定时器数量: {}", timer.task_count());
+    // Note: task_count() is deprecated in lockfree version
 
     // 等待所有定时器触发
     tokio::time::sleep(Duration::from_millis(200)).await;
@@ -57,7 +66,7 @@ async fn test_timer_precision() {
                 *end_time.lock() = Some(Instant::now());
             }
         },
-    );
+    ).await;
 
     tokio::time::sleep(Duration::from_millis(150)).await;
 
@@ -79,37 +88,35 @@ async fn test_concurrent_operations() {
     // 测试并发操作（同时添加和取消定时器）
     let timer = Arc::new(TimerWheel::with_defaults());
     let counter = Arc::new(AtomicU32::new(0));
-    let mut handles = Vec::new();
 
-    // 创建多个任务并发地添加定时器
+    // 并发创建所有定时器（5个任务 × 1000个定时器 = 5000个）
+    let mut all_futures = Vec::new();
+    
     for _ in 0..5 {
-        let timer_clone = Arc::clone(&timer);
-        let counter_clone = Arc::clone(&counter);
-        
-        let handle = tokio::spawn(async move {
-            for _ in 0..1000 {
-                let counter = Arc::clone(&counter_clone);
+        for _ in 0..1000 {
+            let timer_clone = Arc::clone(&timer);
+            let counter_clone = Arc::clone(&counter);
+            
+            let future = async move {
                 timer_clone.schedule_once(
                     Duration::from_millis(50),
                     move || {
-                        let counter = Arc::clone(&counter);
+                        let counter = Arc::clone(&counter_clone);
                         async move {
                             counter.fetch_add(1, Ordering::SeqCst);
                         }
                     },
-                );
-            }
-        });
-        
-        handles.push(handle);
+                ).await
+            };
+            
+            all_futures.push(future);
+        }
     }
 
-    // 等待所有任务完成
-    for handle in handles {
-        handle.await.unwrap();
-    }
+    // 并发等待所有定时器创建完成
+    future::join_all(all_futures).await;
 
-    println!("并发创建后的活跃定时器数量: {}", timer.task_count());
+    // Note: task_count() is deprecated in lockfree version
 
     // 等待定时器触发
     tokio::time::sleep(Duration::from_millis(150)).await;
@@ -138,7 +145,7 @@ async fn test_timer_with_different_delays() {
                     results.lock().push((idx, delay_ms));
                 }
             },
-        );
+        ).await;
     }
 
     // 等待所有定时器触发（等待时间需要大于最大延迟）
@@ -152,34 +159,39 @@ async fn test_timer_with_different_delays() {
 #[tokio::test]
 async fn test_memory_efficiency() {
     // 测试内存效率 - 创建大量定时器然后取消
-    let timer = TimerWheel::with_defaults();
-    let mut handles = Vec::new();
+    let timer = Arc::new(TimerWheel::with_defaults());
 
-    // 创建 5000 个定时器
+    // 并发创建 5000 个定时器
+    let mut create_futures = Vec::new();
     for _ in 0..5000 {
-        let handle = timer.schedule_once(
-            Duration::from_secs(10),
-            || async {},
-        );
-        handles.push(handle);
+        let timer_clone = Arc::clone(&timer);
+        let future = async move {
+            timer_clone.schedule_once(
+                Duration::from_secs(10),
+                || async {},
+            ).await
+        };
+        create_futures.push(future);
     }
 
-    println!("创建后的活跃定时器数量: {}", timer.task_count());
-    assert_eq!(timer.task_count(), 5000);
+    let handles = future::join_all(create_futures).await;
 
-    // 取消所有定时器
-    let mut cancelled_count = 0;
-    for handle in handles {
-        if handle.cancel() {
-            cancelled_count += 1;
-        }
-    }
+    // Note: task_count() is deprecated in lockfree version
+
+    // 并发取消所有定时器
+    let cancel_futures: Vec<_> = handles.into_iter()
+        .map(|handle| handle.cancel())
+        .collect();
+    
+    let results = future::join_all(cancel_futures).await;
+    let cancelled_count = results.into_iter()
+        .filter_map(|r| r.ok())
+        .filter(|&success| success)
+        .count();
 
     println!("取消的定时器数量: {}", cancelled_count);
-    println!("取消后的活跃定时器数量: {}", timer.task_count());
     
     assert_eq!(cancelled_count, 5000);
-    assert_eq!(timer.task_count(), 0, "所有定时器都应该被取消");
 }
 
 #[tokio::test]
@@ -198,7 +210,7 @@ async fn test_repeat_timer() {
                 counter.fetch_add(1, Ordering::SeqCst);
             }
         },
-    );
+    ).await;
 
     // 等待足够时间让定时器触发多次
     tokio::time::sleep(Duration::from_millis(250)).await;
@@ -210,7 +222,8 @@ async fn test_repeat_timer() {
     assert!(count >= 3 && count <= 6, "周期性定时器应该触发多次，实际: {}", count);
 
     // 取消定时器
-    assert!(handle.cancel());
+    let cancel_result = handle.cancel().await.unwrap();
+    assert!(cancel_result);
     
     // 等待一段时间，确保定时器不再触发
     let count_before = counter.load(Ordering::SeqCst);
