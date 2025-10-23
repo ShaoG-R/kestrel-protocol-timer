@@ -455,6 +455,39 @@ impl TimerWheel {
         Self::new(Duration::from_millis(10), 512)
     }
 
+    /// 创建与此时间轮绑定的 TimerService
+    ///
+    /// # 返回
+    /// 绑定到此时间轮的 TimerService 实例
+    ///
+    /// # 示例
+    /// ```no_run
+    /// use timer::TimerWheel;
+    /// use std::time::Duration;
+    ///
+    /// #[tokio::main]
+    /// async fn main() {
+    ///     let timer = TimerWheel::with_defaults().unwrap();
+    ///     let mut service = timer.create_service();
+    ///     
+    ///     // 创建定时器并添加到 service
+    ///     let callbacks: Vec<_> = (0..5)
+    ///         .map(|_| (Duration::from_millis(100), || async {}))
+    ///         .collect();
+    ///     let batch = timer.schedule_once_batch(callbacks).await.unwrap();
+    ///     service.add_batch_handle(batch).await.unwrap();
+    ///     
+    ///     // 接收超时通知
+    ///     let mut rx = service.timeout_receiver();
+    ///     while let Some(task_id) = rx.recv().await {
+    ///         println!("Task {:?} completed", task_id);
+    ///     }
+    /// }
+    /// ```
+    pub fn create_service(&self) -> crate::service::TimerService {
+        crate::service::TimerService::new(self.wheel_id, self.op_sender.clone())
+    }
+
     /// 调度一次性定时器
     ///
     /// # 参数
