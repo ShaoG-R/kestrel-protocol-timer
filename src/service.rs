@@ -16,7 +16,7 @@ enum ServiceCommand {
     /// 取消单个任务
     CancelTask {
         task_id: TaskId,
-        result_tx: oneshot::Sender<bool>,
+        result_tx: Option<oneshot::Sender<bool>>,
     },
     /// 关闭 Service
     Shutdown,
@@ -241,11 +241,51 @@ impl TimerService {
     pub async fn cancel_task(&self, task_id: TaskId) -> Result<bool, String> {
         let (tx, rx) = oneshot::channel();
         self.command_tx
-            .send(ServiceCommand::CancelTask { task_id, result_tx: tx })
+            .send(ServiceCommand::CancelTask { task_id, result_tx: Some(tx) })
             .await
             .map_err(|e| format!("Failed to send CancelTask command: {}", e))?;
         
         rx.await.map_err(|e| format!("Failed to receive cancel result: {}", e))
+    }
+
+    /// 取消指定的任务（无需等待结果）
+    ///
+    /// 立即发送取消请求并返回，不等待取消结果。
+    /// Actor 会在后台监听取消是否成功，并在成功时从活跃任务列表中移除。
+    ///
+    /// # 参数
+    /// - `task_id`: 要取消的任务 ID
+    ///
+    /// # 返回
+    /// - `Ok(())`: 成功发送取消请求
+    /// - `Err(TimerError)`: 发送命令失败
+    ///
+    /// # 示例
+    /// ```no_run
+    /// # use timer::{TimerWheel, TimerService};
+    /// # use std::time::Duration;
+    /// # #[tokio::main]
+    /// # async fn main() {
+    /// let timer = TimerWheel::with_defaults().unwrap();
+    /// let mut service = timer.create_service();
+    /// 
+    /// let handle = timer.schedule_once(Duration::from_secs(10), || async {}).await.unwrap();
+    /// let task_id = handle.task_id();
+    /// 
+    /// service.add_timer_handle(handle).await.unwrap();
+    /// 
+    /// // 发送取消请求，不等待结果
+    /// service.cancel_task_no_wait(task_id).await.unwrap();
+    /// # }
+    /// ```
+    pub async fn cancel_task_no_wait(&self, task_id: TaskId) -> Result<(), TimerError> {
+        self.command_tx
+            .send(ServiceCommand::CancelTask { 
+                task_id, 
+                result_tx: None 
+            })
+            .await
+            .map_err(|_| TimerError::ChannelClosed)
     }
 
     /// 优雅关闭 TimerService
@@ -290,15 +330,22 @@ struct ServiceActor {
     op_sender: Sender<WheelOperation>,
     /// 活跃任务ID集合
     active_tasks: std::collections::HashSet<TaskId>,
+    /// 内部通知接收端（用于移除已取消的任务）
+    remove_task_rx: mpsc::Receiver<TaskId>,
+    /// 内部通知发送端（用于移除已取消的任务）
+    remove_task_tx: mpsc::Sender<TaskId>,
 }
 
 impl ServiceActor {
     fn new(command_rx: mpsc::Receiver<ServiceCommand>, timeout_tx: mpsc::Sender<TaskId>, op_sender: Sender<WheelOperation>) -> Self {
+        let (remove_task_tx, remove_task_rx) = mpsc::channel(100);
         Self {
             command_rx,
             timeout_tx,
             op_sender,
             active_tasks: std::collections::HashSet::new(),
+            remove_task_rx,
+            remove_task_tx,
         }
     }
 
@@ -316,6 +363,12 @@ impl ServiceActor {
                     // 从活跃任务集合中移除该任务
                     self.active_tasks.remove(&task_id);
                     // 任务会自动从 FuturesUnordered 中移除
+                }
+                
+                // 监听内部移除任务通知
+                Some(task_id) = self.remove_task_rx.recv() => {
+                    // 从活跃任务集合中移除已取消的任务
+                    self.active_tasks.remove(&task_id);
                 }
                 
                 // 监听命令
@@ -357,7 +410,7 @@ impl ServiceActor {
                         }
                         ServiceCommand::CancelTask { task_id, result_tx } => {
                             // 检查任务是否存在于活跃任务集合中
-                            let cancel_result = if self.active_tasks.contains(&task_id) {
+                            if self.active_tasks.contains(&task_id) {
                                 // 发送取消操作到时间轮
                                 let (tx, rx) = oneshot::channel();
                                 let send_result = self.op_sender.send(WheelOperation::Cancel {
@@ -366,27 +419,40 @@ impl ServiceActor {
                                 });
                                 
                                 if send_result.is_ok() {
-                                    // 等待取消结果
-                                    match rx.await {
-                                        Ok(success) => {
-                                            if success {
-                                                // 取消成功，从活跃任务集合中移除
-                                                self.active_tasks.remove(&task_id);
+                                    // 在新协程中监听取消结果
+                                    let remove_tx = self.remove_task_tx.clone();
+                                    tokio::spawn(async move {
+                                        match rx.await {
+                                            Ok(success) => {
+                                                if success {
+                                                    // 取消成功，通知 actor 移除任务
+                                                    let _ = remove_tx.send(task_id).await;
+                                                }
+                                                // 如果有 result_tx，发送结果给调用者
+                                                if let Some(result_tx) = result_tx {
+                                                    let _ = result_tx.send(success);
+                                                }
                                             }
-                                            success
+                                            Err(_) => {
+                                                // 通信失败
+                                                if let Some(result_tx) = result_tx {
+                                                    let _ = result_tx.send(false);
+                                                }
+                                            }
                                         }
-                                        Err(_) => false,
-                                    }
+                                    });
                                 } else {
-                                    false
+                                    // 发送失败
+                                    if let Some(result_tx) = result_tx {
+                                        let _ = result_tx.send(false);
+                                    }
                                 }
                             } else {
                                 // 任务不存在
-                                false
-                            };
-                            
-                            // 发送取消结果
-                            let _ = result_tx.send(cancel_result);
+                                if let Some(result_tx) = result_tx {
+                                    let _ = result_tx.send(false);
+                                }
+                            }
                         }
                         ServiceCommand::Shutdown => {
                             break;
@@ -704,6 +770,77 @@ mod tests {
         // 尝试取消已经超时的任务，应该返回 false
         let cancelled = service.cancel_task(task_id).await.unwrap();
         assert!(!cancelled, "Timed out task should not exist anymore");
+    }
+
+    #[tokio::test]
+    async fn test_cancel_task_no_wait() {
+        let timer = TimerWheel::with_defaults().unwrap();
+        let mut service = timer.create_service();
+
+        // 添加一个长时间的定时器
+        let handle = timer.schedule_once(Duration::from_secs(10), || async {}).await.unwrap();
+        let task_id = handle.task_id();
+        
+        service.add_timer_handle(handle).await.unwrap();
+
+        // 使用 no_wait 取消任务
+        service.cancel_task_no_wait(task_id).await.unwrap();
+
+        // 等待一下确保内部取消操作完成
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        // 尝试再次取消同一个任务，应该返回 false（因为已经被取消了）
+        let cancelled_again = service.cancel_task(task_id).await.unwrap();
+        assert!(!cancelled_again, "Task should have been removed from active_tasks");
+    }
+
+    #[tokio::test]
+    async fn test_cancel_task_no_wait_nonexistent() {
+        let timer = TimerWheel::with_defaults().unwrap();
+        let mut service = timer.create_service();
+
+        // 添加一个定时器以初始化 service
+        let handle = timer.schedule_once(Duration::from_millis(50), || async {}).await.unwrap();
+        service.add_timer_handle(handle).await.unwrap();
+
+        // 尝试取消一个不存在的任务（应该不会panic）
+        let fake_task_id = TaskId::new();
+        let result = service.cancel_task_no_wait(fake_task_id).await;
+        assert!(result.is_ok(), "cancel_task_no_wait should succeed even for nonexistent tasks");
+    }
+
+    #[tokio::test]
+    async fn test_cancel_task_spawns_background_task() {
+        let timer = TimerWheel::with_defaults().unwrap();
+        let mut service = timer.create_service();
+        let counter = Arc::new(AtomicU32::new(0));
+
+        // 创建一个定时器
+        let counter_clone = Arc::clone(&counter);
+        let handle = timer.schedule_once(
+            Duration::from_secs(10),
+            move || {
+                let counter = Arc::clone(&counter_clone);
+                async move {
+                    counter.fetch_add(1, Ordering::SeqCst);
+                }
+            },
+        ).await.unwrap();
+        let task_id = handle.task_id();
+        
+        service.add_timer_handle(handle).await.unwrap();
+
+        // 使用 cancel_task（会等待结果，但在后台协程中处理）
+        let cancelled = service.cancel_task(task_id).await.unwrap();
+        assert!(cancelled, "Task should be cancelled successfully");
+
+        // 等待足够长时间确保回调不会被执行
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert_eq!(counter.load(Ordering::SeqCst), 0, "Callback should not have been executed");
+
+        // 验证任务已从 active_tasks 中移除
+        let cancelled_again = service.cancel_task(task_id).await.unwrap();
+        assert!(!cancelled_again, "Task should have been removed from active_tasks");
     }
 }
 
