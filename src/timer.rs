@@ -32,7 +32,9 @@ enum WheelOperation {
 }
 
 /// 定时器句柄，用于管理定时器的生命周期
-#[derive(Clone)]
+/// 
+/// 注意：此类型不实现 Clone，以防止重复取消同一个定时器。
+/// 每个定时器只应有一个所有者。
 pub struct TimerHandle {
     task_id: TaskId,
     op_sender: Sender<WheelOperation>,
@@ -100,6 +102,184 @@ impl TimerHandle {
     /// 获取任务 ID
     pub fn task_id(&self) -> TaskId {
         self.task_id
+    }
+}
+
+/// 批量定时器句柄，用于管理批量调度的定时器
+/// 
+/// 通过共用单个 Sender 减少内存开销，同时提供批量操作和迭代器访问能力。
+/// 
+/// 注意：此类型不实现 Clone，以防止重复取消同一批定时器。
+/// 如需访问单个定时器句柄，请使用 `into_iter()` 或 `into_handles()` 进行转换。
+pub struct BatchHandle {
+    task_ids: Vec<TaskId>,
+    op_sender: Sender<WheelOperation>,
+}
+
+impl BatchHandle {
+    fn new(task_ids: Vec<TaskId>, op_sender: Sender<WheelOperation>) -> Self {
+        Self { task_ids, op_sender }
+    }
+
+    /// 批量取消所有定时器（异步获取结果）
+    ///
+    /// # 返回
+    /// - `Ok(usize)`: 成功取消的任务数量
+    /// - `Err(TimerError)`: 内部通信通道已关闭
+    ///
+    /// # 示例
+    /// ```no_run
+    /// # use timer::TimerWheel;
+    /// # use std::time::Duration;
+    /// # #[tokio::main]
+    /// # async fn main() {
+    /// let timer = TimerWheel::with_defaults().unwrap();
+    /// let callbacks: Vec<_> = (0..10)
+    ///     .map(|_| (Duration::from_secs(1), || async {}))
+    ///     .collect();
+    /// let batch = timer.schedule_once_batch(callbacks).await.unwrap();
+    /// 
+    /// let cancelled = batch.cancel_all().await.unwrap();
+    /// println!("取消了 {} 个定时器", cancelled);
+    /// # }
+    /// ```
+    pub async fn cancel_all(self) -> Result<usize, TimerError> {
+        let (tx, rx) = oneshot::channel();
+        let _ = self.op_sender.send(WheelOperation::CancelBatch {
+            task_ids: self.task_ids,
+            result_tx: Some(tx),
+        });
+        rx.await.map_err(|_| TimerError::ChannelClosed)
+    }
+
+    /// 批量取消所有定时器（无需等待结果）
+    ///
+    /// 立即发送批量取消请求并返回，不等待取消结果。
+    /// 适用于不关心取消是否成功的场景，性能更好。
+    ///
+    /// # 示例
+    /// ```no_run
+    /// # use timer::TimerWheel;
+    /// # use std::time::Duration;
+    /// # #[tokio::main]
+    /// # async fn main() {
+    /// let timer = TimerWheel::with_defaults().unwrap();
+    /// let callbacks: Vec<_> = (0..10)
+    ///     .map(|_| (Duration::from_secs(1), || async {}))
+    ///     .collect();
+    /// let batch = timer.schedule_once_batch(callbacks).await.unwrap();
+    /// 
+    /// batch.cancel_all_no_wait();
+    /// # }
+    /// ```
+    pub fn cancel_all_no_wait(self) {
+        let _ = self.op_sender.send(WheelOperation::CancelBatch {
+            task_ids: self.task_ids,
+            result_tx: None,
+        });
+    }
+
+    /// 将批量句柄转换为单个定时器句柄的 Vec
+    ///
+    /// 消耗 BatchHandle，为每个任务创建独立的 TimerHandle。
+    ///
+    /// # 示例
+    /// ```no_run
+    /// # use timer::TimerWheel;
+    /// # use std::time::Duration;
+    /// # #[tokio::main]
+    /// # async fn main() {
+    /// let timer = TimerWheel::with_defaults().unwrap();
+    /// let callbacks: Vec<_> = (0..3)
+    ///     .map(|_| (Duration::from_secs(1), || async {}))
+    ///     .collect();
+    /// let batch = timer.schedule_once_batch(callbacks).await.unwrap();
+    /// 
+    /// // 转换为独立的句柄
+    /// let handles = batch.into_handles();
+    /// for handle in handles {
+    ///     // 可以单独操作每个句柄
+    /// }
+    /// # }
+    /// ```
+    pub fn into_handles(self) -> Vec<TimerHandle> {
+        self.task_ids
+            .into_iter()
+            .map(|task_id| TimerHandle::new(task_id, self.op_sender.clone()))
+            .collect()
+    }
+
+    /// 获取批量任务的数量
+    pub fn len(&self) -> usize {
+        self.task_ids.len()
+    }
+
+    /// 检查批量任务是否为空
+    pub fn is_empty(&self) -> bool {
+        self.task_ids.is_empty()
+    }
+
+    /// 获取所有任务 ID 的引用
+    pub fn task_ids(&self) -> &[TaskId] {
+        &self.task_ids
+    }
+}
+
+/// 实现 IntoIterator，允许直接迭代 BatchHandle
+/// 
+/// # 示例
+/// ```no_run
+/// # use timer::TimerWheel;
+/// # use std::time::Duration;
+/// # #[tokio::main]
+/// # async fn main() {
+/// let timer = TimerWheel::with_defaults().unwrap();
+/// let callbacks: Vec<_> = (0..3)
+///     .map(|_| (Duration::from_secs(1), || async {}))
+///     .collect();
+/// let batch = timer.schedule_once_batch(callbacks).await.unwrap();
+/// 
+/// // 直接迭代，每个元素都是独立的 TimerHandle
+/// for handle in batch {
+///     // 可以单独操作每个句柄
+/// }
+/// # }
+/// ```
+impl IntoIterator for BatchHandle {
+    type Item = TimerHandle;
+    type IntoIter = BatchHandleIter;
+
+    fn into_iter(self) -> Self::IntoIter {
+        BatchHandleIter {
+            task_ids: self.task_ids.into_iter(),
+            op_sender: self.op_sender,
+        }
+    }
+}
+
+/// BatchHandle 的迭代器
+pub struct BatchHandleIter {
+    task_ids: std::vec::IntoIter<TaskId>,
+    op_sender: Sender<WheelOperation>,
+}
+
+impl Iterator for BatchHandleIter {
+    type Item = TimerHandle;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.task_ids.next().map(|task_id| {
+            TimerHandle::new(task_id, self.op_sender.clone())
+        })
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        self.task_ids.size_hint()
+    }
+}
+
+impl ExactSizeIterator for BatchHandleIter {
+    fn len(&self) -> usize {
+        self.task_ids.len()
     }
 }
 
@@ -211,12 +391,13 @@ impl TimerWheel {
     /// - `tasks`: (延迟时间, 回调) 的元组列表
     ///
     /// # 返回
-    /// - `Ok(Vec<TimerHandle>)`: 成功调度，返回定时器句柄列表
+    /// - `Ok(BatchHandle)`: 成功调度，返回批量定时器句柄
     /// - `Err(TimerError)`: 内部通信通道已关闭
     ///
     /// # 性能优势
     /// - 批量处理减少通道通信开销
     /// - 内部优化批量插入操作
+    /// - 共用单个 Sender 减少内存开销
     ///
     /// # 示例
     /// ```no_run
@@ -245,11 +426,20 @@ impl TimerWheel {
     ///         })
     ///         .collect();
     ///     
-    ///     let handles = timer.schedule_once_batch(callbacks).await.unwrap();
-    ///     println!("Scheduled {} timers", handles.len());
+    ///     let batch = timer.schedule_once_batch(callbacks).await.unwrap();
+    ///     println!("Scheduled {} timers", batch.len());
+    ///     
+    ///     // 批量取消所有定时器
+    ///     let cancelled = batch.cancel_all().await.unwrap();
+    ///     println!("Cancelled {} timers", cancelled);
+    ///     
+    ///     // 或者获取单个句柄
+    ///     // if let Some(handle) = batch.get_handle(0) {
+    ///     //     handle.cancel().await.unwrap();
+    ///     // }
     /// }
     /// ```
-    pub async fn schedule_once_batch<C>(&self, callbacks: Vec<(Duration, C)>) -> Result<Vec<TimerHandle>, TimerError>
+    pub async fn schedule_once_batch<C>(&self, callbacks: Vec<(Duration, C)>) -> Result<BatchHandle, TimerError>
     where
         C: TimerCallback,
     {
@@ -272,12 +462,7 @@ impl TimerWheel {
         });
         
         let task_ids = rx.await.map_err(|_| TimerError::ChannelClosed)?;
-        let handles = task_ids
-            .into_iter()
-            .map(|task_id| TimerHandle::new(task_id, self.op_sender.clone()))
-            .collect();
-        
-        Ok(handles)
+        Ok(BatchHandle::new(task_ids, self.op_sender.clone()))
     }
 
     /// 调度周期性定时器

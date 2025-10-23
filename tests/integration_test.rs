@@ -258,10 +258,10 @@ async fn test_batch_schedule() {
         .collect();
     
     // 批量调度
-    let handles = timer.schedule_once_batch(callbacks).await.unwrap();
+    let batch = timer.schedule_once_batch(callbacks).await.unwrap();
     
     println!("批量调度 {} 个定时器耗时: {:?}", BATCH_SIZE, start.elapsed());
-    assert_eq!(handles.len(), BATCH_SIZE);
+    assert_eq!(batch.len(), BATCH_SIZE);
     
     // 等待所有定时器触发
     tokio::time::sleep(Duration::from_millis(150)).await;
@@ -285,15 +285,12 @@ async fn test_batch_cancel() {
         })
         .collect();
     
-    let handles = timer.schedule_once_batch(callbacks).await.unwrap();
-    assert_eq!(handles.len(), TIMER_COUNT);
+    let batch = timer.schedule_once_batch(callbacks).await.unwrap();
+    assert_eq!(batch.len(), TIMER_COUNT);
     
-    // 收集任务 ID
-    let task_ids: Vec<_> = handles.iter().map(|h| h.task_id()).collect();
-    
-    // 批量取消
+    // 批量取消（使用 BatchHandle 的 cancel_all 方法）
     let start = Instant::now();
-    let cancelled = timer.cancel_batch(&task_ids).await.unwrap();
+    let cancelled = batch.cancel_all().await.unwrap();
     let elapsed = start.elapsed();
     
     println!("批量取消 {} 个定时器耗时: {:?}", TIMER_COUNT, elapsed);
@@ -310,19 +307,33 @@ async fn test_batch_cancel_partial() {
         .map(|_| (Duration::from_millis(100), || async {}))
         .collect();
     
-    let handles = timer.schedule_once_batch(callbacks).await.unwrap();
+    let batch = timer.schedule_once_batch(callbacks).await.unwrap();
+    
+    // 转换为独立的句柄
+    let mut handles = batch.into_handles();
+    
+    // 分离：取出前 5 个，保留后 5 个
+    let remaining_handles = handles.split_off(5);
     
     // 取消前 5 个
-    let first_half: Vec<_> = handles[0..5].iter().map(|h| h.task_id()).collect();
-    let cancelled = timer.cancel_batch(&first_half).await.unwrap();
-    assert_eq!(cancelled, 5);
+    let mut cancelled_count = 0;
+    for handle in handles {
+        if handle.cancel().await.unwrap() {
+            cancelled_count += 1;
+        }
+    }
+    assert_eq!(cancelled_count, 5);
     
     // 等待剩余的定时器触发
     tokio::time::sleep(Duration::from_millis(150)).await;
     
     // 尝试取消已经触发的定时器
-    let second_half: Vec<_> = handles[5..10].iter().map(|h| h.task_id()).collect();
-    let cancelled_after = timer.cancel_batch(&second_half).await.unwrap();
+    let mut cancelled_after = 0;
+    for handle in remaining_handles {
+        if handle.cancel().await.unwrap() {
+            cancelled_after += 1;
+        }
+    }
     assert_eq!(cancelled_after, 0, "已触发的定时器不应该被取消");
 }
 
@@ -336,12 +347,11 @@ async fn test_batch_cancel_no_wait() {
         .map(|_| (Duration::from_secs(10), || async {}))
         .collect();
     
-    let handles = timer.schedule_once_batch(callbacks).await.unwrap();
-    let task_ids: Vec<_> = handles.iter().map(|h| h.task_id()).collect();
+    let batch = timer.schedule_once_batch(callbacks).await.unwrap();
     
-    // 批量取消（不等待结果）
+    // 批量取消（不等待结果，使用 BatchHandle 的 cancel_all_no_wait 方法）
     let start = Instant::now();
-    timer.cancel_batch_no_wait(&task_ids);
+    batch.cancel_all_no_wait();
     let elapsed = start.elapsed();
     
     println!("批量取消（无等待）耗时: {:?}", elapsed);

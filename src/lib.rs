@@ -58,7 +58,7 @@ mod timer;
 // 重新导出公共 API
 pub use error::TimerError;
 pub use task::{CallbackWrapper, TaskId, TaskType, TimerCallback};
-pub use timer::{TimerHandle, TimerWheel};
+pub use timer::{BatchHandle, BatchHandleIter, TimerHandle, TimerWheel};
 
 #[cfg(test)]
 mod tests {
