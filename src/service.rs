@@ -20,6 +20,10 @@ enum ServiceCommand {
         task_id: TaskId,
         result_tx: Option<oneshot::Sender<bool>>,
     },
+    /// 从活跃任务集合中移除任务（用于批量取消后的清理）
+    RemoveTask {
+        task_id: TaskId,
+    },
     /// 关闭 Service
     Shutdown,
 }
@@ -294,6 +298,120 @@ impl TimerService {
             })
             .await
             .map_err(|_| TimerError::ChannelClosed)
+    }
+
+    /// 批量取消任务（等待结果）
+    ///
+    /// 使用底层的批量取消操作一次性取消多个任务，性能优于循环调用 cancel_task。
+    ///
+    /// # 参数
+    /// - `task_ids`: 要取消的任务 ID 列表
+    ///
+    /// # 返回
+    /// - `Ok(usize)`: 成功取消的任务数量
+    /// - `Err(TimerError)`: 取消失败
+    ///
+    /// # 示例
+    /// ```no_run
+    /// # use timer::{TimerWheel, TimerService};
+    /// # use std::time::Duration;
+    /// # #[tokio::main]
+    /// # async fn main() {
+    /// let timer = TimerWheel::with_defaults().unwrap();
+    /// let service = timer.create_service();
+    /// 
+    /// let callbacks: Vec<_> = (0..10)
+    ///     .map(|_| (Duration::from_secs(10), || async {}))
+    ///     .collect();
+    /// let task_ids = service.schedule_once_batch(callbacks).await.unwrap();
+    /// 
+    /// // 批量取消
+    /// let cancelled = service.cancel_batch(&task_ids).await.unwrap();
+    /// println!("成功取消 {} 个任务", cancelled);
+    /// # }
+    /// ```
+    pub async fn cancel_batch(&self, task_ids: &[TaskId]) -> Result<usize, TimerError> {
+        // 过滤出活跃的任务
+        let active_task_ids: Vec<TaskId> = task_ids
+            .iter()
+            .copied()
+            .collect();
+
+        if active_task_ids.is_empty() {
+            return Ok(0);
+        }
+
+        // 直接使用底层的批量取消
+        let (tx, rx) = oneshot::channel();
+        self.op_sender
+            .send(WheelOperation::CancelBatch {
+                task_ids: active_task_ids.clone(),
+                result_tx: Some(tx),
+            })
+            .map_err(|_| TimerError::ChannelClosed)?;
+
+        let cancelled_count = rx.await.map_err(|_| TimerError::ChannelClosed)?;
+
+        // 批量从活跃任务集合中移除（通过发送多个移除通知）
+        for task_id in &active_task_ids {
+            let _ = self.command_tx
+                .send(ServiceCommand::RemoveTask { task_id: *task_id })
+                .await;
+        }
+
+        Ok(cancelled_count)
+    }
+
+    /// 批量取消任务（无需等待结果）
+    ///
+    /// 立即发送批量取消请求并返回，不等待取消结果。
+    ///
+    /// # 参数
+    /// - `task_ids`: 要取消的任务 ID 列表
+    ///
+    /// # 返回
+    /// - `Ok(())`: 成功发送取消请求
+    /// - `Err(TimerError)`: 发送命令失败
+    ///
+    /// # 示例
+    /// ```no_run
+    /// # use timer::{TimerWheel, TimerService};
+    /// # use std::time::Duration;
+    /// # #[tokio::main]
+    /// # async fn main() {
+    /// let timer = TimerWheel::with_defaults().unwrap();
+    /// let service = timer.create_service();
+    /// 
+    /// let callbacks: Vec<_> = (0..10)
+    ///     .map(|_| (Duration::from_secs(10), || async {}))
+    ///     .collect();
+    /// let task_ids = service.schedule_once_batch(callbacks).await.unwrap();
+    /// 
+    /// // 批量取消，不等待结果
+    /// service.cancel_batch_no_wait(&task_ids).await.unwrap();
+    /// # }
+    /// ```
+    pub async fn cancel_batch_no_wait(&self, task_ids: &[TaskId]) -> Result<(), TimerError> {
+        if task_ids.is_empty() {
+            return Ok(());
+        }
+
+        // 直接使用底层的批量取消
+        self.op_sender
+            .send(WheelOperation::CancelBatch {
+                task_ids: task_ids.to_vec(),
+                result_tx: None,
+            })
+            .map_err(|_| TimerError::ChannelClosed)?;
+
+        // 批量从活跃任务集合中移除
+        for task_id in task_ids {
+            let _ = self.command_tx
+                .send(ServiceCommand::RemoveTask { task_id: *task_id })
+                .await;
+        }
+
+        Ok(())
     }
 
     /// 调度一次性定时器
@@ -613,6 +731,10 @@ impl ServiceActor {
                                     let _ = result_tx.send(false);
                                 }
                             }
+                        }
+                        ServiceCommand::RemoveTask { task_id } => {
+                            // 从活跃任务集合中移除任务
+                            self.active_tasks.remove(&task_id);
                         }
                         ServiceCommand::Shutdown => {
                             break;
@@ -1121,6 +1243,108 @@ mod tests {
         // 等待确保回调不会执行
         tokio::time::sleep(Duration::from_millis(100)).await;
         assert_eq!(counter.load(Ordering::SeqCst), 0, "Callback should not have been executed");
+    }
+
+    #[tokio::test]
+    async fn test_cancel_batch_direct() {
+        let timer = TimerWheel::with_defaults().unwrap();
+        let service = timer.create_service();
+        let counter = Arc::new(AtomicU32::new(0));
+
+        // 批量调度定时器
+        let callbacks: Vec<_> = (0..10)
+            .map(|_| {
+                let counter = Arc::clone(&counter);
+                (Duration::from_secs(10), move || {
+                    let counter = Arc::clone(&counter);
+                    async move {
+                        counter.fetch_add(1, Ordering::SeqCst);
+                    }
+                })
+            })
+            .collect();
+
+        let task_ids = service.schedule_once_batch(callbacks).await.unwrap();
+        assert_eq!(task_ids.len(), 10);
+
+        // 批量取消所有任务
+        let cancelled = service.cancel_batch(&task_ids).await.unwrap();
+        assert_eq!(cancelled, 10, "All 10 tasks should be cancelled");
+
+        // 等待确保回调不会执行
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert_eq!(counter.load(Ordering::SeqCst), 0, "No callbacks should have been executed");
+    }
+
+    #[tokio::test]
+    async fn test_cancel_batch_partial() {
+        let timer = TimerWheel::with_defaults().unwrap();
+        let service = timer.create_service();
+        let counter = Arc::new(AtomicU32::new(0));
+
+        // 批量调度定时器
+        let callbacks: Vec<_> = (0..10)
+            .map(|_| {
+                let counter = Arc::clone(&counter);
+                (Duration::from_secs(10), move || {
+                    let counter = Arc::clone(&counter);
+                    async move {
+                        counter.fetch_add(1, Ordering::SeqCst);
+                    }
+                })
+            })
+            .collect();
+
+        let task_ids = service.schedule_once_batch(callbacks).await.unwrap();
+
+        // 只取消前5个任务
+        let to_cancel: Vec<_> = task_ids.iter().take(5).copied().collect();
+        let cancelled = service.cancel_batch(&to_cancel).await.unwrap();
+        assert_eq!(cancelled, 5, "5 tasks should be cancelled");
+
+        // 等待确保前5个回调不会执行
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert_eq!(counter.load(Ordering::SeqCst), 0, "Cancelled tasks should not execute");
+    }
+
+    #[tokio::test]
+    async fn test_cancel_batch_no_wait_direct() {
+        let timer = TimerWheel::with_defaults().unwrap();
+        let service = timer.create_service();
+        let counter = Arc::new(AtomicU32::new(0));
+
+        // 批量调度定时器
+        let callbacks: Vec<_> = (0..10)
+            .map(|_| {
+                let counter = Arc::clone(&counter);
+                (Duration::from_secs(10), move || {
+                    let counter = Arc::clone(&counter);
+                    async move {
+                        counter.fetch_add(1, Ordering::SeqCst);
+                    }
+                })
+            })
+            .collect();
+
+        let task_ids = service.schedule_once_batch(callbacks).await.unwrap();
+
+        // 使用 no_wait 批量取消
+        service.cancel_batch_no_wait(&task_ids).await.unwrap();
+
+        // 等待确保回调不会执行
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        assert_eq!(counter.load(Ordering::SeqCst), 0, "No callbacks should have been executed");
+    }
+
+    #[tokio::test]
+    async fn test_cancel_batch_empty() {
+        let timer = TimerWheel::with_defaults().unwrap();
+        let service = timer.create_service();
+
+        // 取消空列表
+        let empty: Vec<TaskId> = vec![];
+        let cancelled = service.cancel_batch(&empty).await.unwrap();
+        assert_eq!(cancelled, 0, "No tasks should be cancelled");
     }
 }
 

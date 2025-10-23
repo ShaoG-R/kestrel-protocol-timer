@@ -84,11 +84,11 @@ fn bench_cancel_single(c: &mut Criterion) {
     group.finish();
 }
 
-/// 基准测试：批量任务取消
+/// 基准测试：批量任务取消（使用优化的批量 API）
 fn bench_cancel_batch(c: &mut Criterion) {
     let mut group = c.benchmark_group("cancel_batch");
     
-    for size in [10, 100].iter() {
+    for size in [10, 100, 1000].iter() {
         group.bench_with_input(BenchmarkId::from_parameter(size), size, |b, &size| {
             b.to_async(tokio::runtime::Runtime::new().unwrap())
                 .iter(|| async move {
@@ -101,14 +101,12 @@ fn bench_cancel_batch(c: &mut Criterion) {
                         .collect();
                     let task_ids = service.schedule_once_batch(callbacks).await.unwrap();
                     
-                    // 测量批量取消操作的性能
-                    let mut results = Vec::new();
-                    for task_id in task_ids {
-                        let result = service.cancel_task(task_id).await.unwrap();
-                        results.push(result);
-                    }
+                    // 测量批量取消操作的性能（使用优化的批量 API）
+                    let cancelled = black_box(
+                        service.cancel_batch(&task_ids).await.unwrap()
+                    );
                     
-                    black_box(results);
+                    black_box(cancelled);
                 });
         });
     }
@@ -148,11 +146,11 @@ fn bench_concurrent_schedule(c: &mut Criterion) {
     group.finish();
 }
 
-/// 基准测试：高频取消
+/// 基准测试：高频取消（使用优化的批量 API）
 fn bench_high_frequency_cancel(c: &mut Criterion) {
     let mut group = c.benchmark_group("high_frequency_cancel");
     
-    group.bench_function("cancel_1000_tasks", |b| {
+    group.bench_function("cancel_1000_tasks_batch", |b| {
         b.to_async(tokio::runtime::Runtime::new().unwrap())
             .iter(|| async {
                 let timer = TimerWheel::with_defaults().unwrap();
@@ -164,21 +162,19 @@ fn bench_high_frequency_cancel(c: &mut Criterion) {
                     .collect();
                 let task_ids = service.schedule_once_batch(callbacks).await.unwrap();
                 
-                // 快速连续取消所有任务
-                let mut results = Vec::new();
-                for task_id in task_ids {
-                    let result = service.cancel_task(task_id).await.unwrap();
-                    results.push(result);
-                }
+                // 批量取消所有任务
+                let cancelled = black_box(
+                    service.cancel_batch(&task_ids).await.unwrap()
+                );
                 
-                black_box(results);
+                black_box(cancelled);
             });
     });
     
     group.finish();
 }
 
-/// 基准测试：混合操作（调度和取消）
+/// 基准测试：混合操作（调度和取消，使用优化的批量 API）
 fn bench_mixed_operations(c: &mut Criterion) {
     let mut group = c.benchmark_group("mixed_operations");
     
@@ -196,14 +192,11 @@ fn bench_mixed_operations(c: &mut Criterion) {
                         .collect();
                     let task_ids = service.schedule_once_batch(callbacks).await.unwrap();
                     
-                    // 取消前5个任务
-                    let mut results = Vec::new();
-                    for task_id in task_ids.iter().take(5) {
-                        let result = service.cancel_task(*task_id).await.unwrap();
-                        results.push(result);
-                    }
+                    // 使用批量取消前5个任务
+                    let to_cancel: Vec<_> = task_ids.iter().take(5).copied().collect();
+                    let cancelled = service.cancel_batch(&to_cancel).await.unwrap();
                     
-                    black_box(results);
+                    black_box(cancelled);
                 }
             });
     });

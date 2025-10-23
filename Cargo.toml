@@ -11,7 +11,7 @@ crossbeam = "0.8"
 futures = "0.3"
 
 [dev-dependencies]
-criterion = { version = "0.5", features = ["async_tokio"] }
+criterion = { version = "0.7.0", features = ["async_tokio"] }
 
 [[bench]]
 name = "service_benchmark"
