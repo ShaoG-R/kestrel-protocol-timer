@@ -10,10 +10,18 @@ fn bench_schedule_single(c: &mut Criterion) {
     let mut group = c.benchmark_group("schedule_single");
     
     group.bench_function("schedule_once", |b| {
-        b.to_async(tokio::runtime::Runtime::new().unwrap())
-            .iter(|| async {
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        
+        b.to_async(&runtime).iter_custom(|iters| async move {
+            let mut total_duration = Duration::from_secs(0);
+            
+            for _ in 0..iters {
+                // 准备阶段：创建 timer 和 service（不计入测量）
                 let timer = TimerWheel::with_defaults().unwrap();
                 let service = timer.create_service();
+                
+                // 测量阶段：只测量 schedule_once 的性能
+                let start = std::time::Instant::now();
                 
                 let task_id = black_box(
                     service.schedule_once(
@@ -22,8 +30,12 @@ fn bench_schedule_single(c: &mut Criterion) {
                     ).await.unwrap()
                 );
                 
+                total_duration += start.elapsed();
                 black_box(task_id);
-            });
+            }
+            
+            total_duration
+        });
     });
     
     group.finish();
@@ -35,8 +47,13 @@ fn bench_schedule_batch(c: &mut Criterion) {
     
     for size in [10, 100, 1000].iter() {
         group.bench_with_input(BenchmarkId::from_parameter(size), size, |b, &size| {
-            b.to_async(tokio::runtime::Runtime::new().unwrap())
-                .iter(|| async move {
+            let runtime = tokio::runtime::Runtime::new().unwrap();
+            
+            b.to_async(&runtime).iter_custom(|iters| async move {
+                let mut total_duration = Duration::from_secs(0);
+                
+                for _ in 0..iters {
+                    // 准备阶段：创建 timer 和 service（不计入测量）
                     let timer = TimerWheel::with_defaults().unwrap();
                     let service = timer.create_service();
                     
@@ -44,12 +61,19 @@ fn bench_schedule_batch(c: &mut Criterion) {
                         .map(|_| (Duration::from_secs(10), || async {}))
                         .collect();
                     
+                    // 测量阶段：只测量 schedule_once_batch 的性能
+                    let start = std::time::Instant::now();
+                    
                     let task_ids = black_box(
                         service.schedule_once_batch(callbacks).await.unwrap()
                     );
                     
+                    total_duration += start.elapsed();
                     black_box(task_ids);
-                });
+                }
+                
+                total_duration
+            });
         });
     }
     
@@ -61,24 +85,34 @@ fn bench_cancel_single(c: &mut Criterion) {
     let mut group = c.benchmark_group("cancel_single");
     
     group.bench_function("cancel_task", |b| {
-        b.to_async(tokio::runtime::Runtime::new().unwrap())
-            .iter(|| async {
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        
+        b.to_async(&runtime).iter_custom(|iters| async move {
+            let mut total_duration = Duration::from_secs(0);
+            
+            for _ in 0..iters {
+                // 准备阶段：创建 timer、service 和调度任务（不计入测量）
                 let timer = TimerWheel::with_defaults().unwrap();
                 let service = timer.create_service();
                 
-                // 先调度一个任务
                 let task_id = service.schedule_once(
                     Duration::from_secs(10),
                     || async {}
                 ).await.unwrap();
                 
-                // 测量取消操作的性能
+                // 测量阶段：只测量 cancel_task 的性能
+                let start = std::time::Instant::now();
+                
                 let result = black_box(
                     service.cancel_task(task_id).await.unwrap()
                 );
                 
+                total_duration += start.elapsed();
                 black_box(result);
-            });
+            }
+            
+            total_duration
+        });
     });
     
     group.finish();
@@ -90,24 +124,34 @@ fn bench_cancel_batch(c: &mut Criterion) {
     
     for size in [10, 100, 1000].iter() {
         group.bench_with_input(BenchmarkId::from_parameter(size), size, |b, &size| {
-            b.to_async(tokio::runtime::Runtime::new().unwrap())
-                .iter(|| async move {
+            let runtime = tokio::runtime::Runtime::new().unwrap();
+            
+            b.to_async(&runtime).iter_custom(|iters| async move {
+                let mut total_duration = Duration::from_secs(0);
+                
+                for _ in 0..iters {
+                    // 准备阶段：创建 timer、service 和调度任务（不计入测量）
                     let timer = TimerWheel::with_defaults().unwrap();
                     let service = timer.create_service();
                     
-                    // 先批量调度任务
                     let callbacks: Vec<_> = (0..size)
                         .map(|_| (Duration::from_secs(10), || async {}))
                         .collect();
                     let task_ids = service.schedule_once_batch(callbacks).await.unwrap();
                     
-                    // 测量批量取消操作的性能（使用优化的批量 API）
+                    // 测量阶段：只测量 cancel_batch 的性能
+                    let start = std::time::Instant::now();
+                    
                     let cancelled = black_box(
                         service.cancel_batch(&task_ids).await.unwrap()
                     );
                     
+                    total_duration += start.elapsed();
                     black_box(cancelled);
-                });
+                }
+                
+                total_duration
+            });
         });
     }
     
@@ -120,10 +164,18 @@ fn bench_concurrent_schedule(c: &mut Criterion) {
     
     for concurrent_ops in [10, 50].iter() {
         group.bench_with_input(BenchmarkId::from_parameter(concurrent_ops), concurrent_ops, |b, &concurrent_ops| {
-            b.to_async(tokio::runtime::Runtime::new().unwrap())
-                .iter(|| async move {
+            let runtime = tokio::runtime::Runtime::new().unwrap();
+            
+            b.to_async(&runtime).iter_custom(|iters| async move {
+                let mut total_duration = Duration::from_secs(0);
+                
+                for _ in 0..iters {
+                    // 准备阶段：创建 timer 和 service（不计入测量）
                     let timer = TimerWheel::with_defaults().unwrap();
                     let service = timer.create_service();
+                    
+                    // 测量阶段：只测量并发调度的性能
+                    let start = std::time::Instant::now();
                     
                     // 并发执行多个调度操作
                     let mut handles = Vec::new();
@@ -138,8 +190,13 @@ fn bench_concurrent_schedule(c: &mut Criterion) {
                     
                     // 等待所有调度完成
                     let results = futures::future::join_all(handles).await;
+                    
+                    total_duration += start.elapsed();
                     black_box(results);
-                });
+                }
+                
+                total_duration
+            });
         });
     }
     
@@ -151,24 +208,34 @@ fn bench_high_frequency_cancel(c: &mut Criterion) {
     let mut group = c.benchmark_group("high_frequency_cancel");
     
     group.bench_function("cancel_1000_tasks_batch", |b| {
-        b.to_async(tokio::runtime::Runtime::new().unwrap())
-            .iter(|| async {
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        
+        b.to_async(&runtime).iter_custom(|iters| async move {
+            let mut total_duration = Duration::from_secs(0);
+            
+            for _ in 0..iters {
+                // 准备阶段：创建 timer、service 和调度任务（不计入测量）
                 let timer = TimerWheel::with_defaults().unwrap();
                 let service = timer.create_service();
                 
-                // 先调度1000个任务
                 let callbacks: Vec<_> = (0..1000)
                     .map(|_| (Duration::from_secs(10), || async {}))
                     .collect();
                 let task_ids = service.schedule_once_batch(callbacks).await.unwrap();
                 
-                // 批量取消所有任务
+                // 测量阶段：只测量 cancel_batch 的性能
+                let start = std::time::Instant::now();
+                
                 let cancelled = black_box(
                     service.cancel_batch(&task_ids).await.unwrap()
                 );
                 
+                total_duration += start.elapsed();
                 black_box(cancelled);
-            });
+            }
+            
+            total_duration
+        });
     });
     
     group.finish();
@@ -179,10 +246,18 @@ fn bench_mixed_operations(c: &mut Criterion) {
     let mut group = c.benchmark_group("mixed_operations");
     
     group.bench_function("schedule_and_cancel_interleaved", |b| {
-        b.to_async(tokio::runtime::Runtime::new().unwrap())
-            .iter(|| async {
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        
+        b.to_async(&runtime).iter_custom(|iters| async move {
+            let mut total_duration = Duration::from_secs(0);
+            
+            for _ in 0..iters {
+                // 准备阶段：创建 timer 和 service（不计入测量）
                 let timer = TimerWheel::with_defaults().unwrap();
                 let service = timer.create_service();
+                
+                // 测量阶段：测量混合操作的性能
+                let start = std::time::Instant::now();
                 
                 // 交替执行调度和取消操作
                 for _ in 0..50 {
@@ -198,7 +273,12 @@ fn bench_mixed_operations(c: &mut Criterion) {
                     
                     black_box(cancelled);
                 }
-            });
+                
+                total_duration += start.elapsed();
+            }
+            
+            total_duration
+        });
     });
     
     group.finish();
@@ -209,25 +289,45 @@ fn bench_schedule_notify(c: &mut Criterion) {
     let mut group = c.benchmark_group("schedule_notify");
     
     group.bench_function("schedule_once_notify", |b| {
-        b.to_async(tokio::runtime::Runtime::new().unwrap())
-            .iter(|| async {
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        
+        b.to_async(&runtime).iter_custom(|iters| async move {
+            let mut total_duration = Duration::from_secs(0);
+            
+            for _ in 0..iters {
+                // 准备阶段：创建 timer 和 service（不计入测量）
                 let timer = TimerWheel::with_defaults().unwrap();
                 let service = timer.create_service();
+                
+                // 测量阶段：只测量 schedule_once_notify 的性能
+                let start = std::time::Instant::now();
                 
                 let task_id = black_box(
                     service.schedule_once_notify(Duration::from_secs(10)).await.unwrap()
                 );
                 
+                total_duration += start.elapsed();
                 black_box(task_id);
-            });
+            }
+            
+            total_duration
+        });
     });
     
     for size in [100, 1000].iter() {
         group.bench_with_input(BenchmarkId::new("batch_notify", size), size, |b, &size| {
-            b.to_async(tokio::runtime::Runtime::new().unwrap())
-                .iter(|| async move {
+            let runtime = tokio::runtime::Runtime::new().unwrap();
+            
+            b.to_async(&runtime).iter_custom(|iters| async move {
+                let mut total_duration = Duration::from_secs(0);
+                
+                for _ in 0..iters {
+                    // 准备阶段：创建 timer 和 service（不计入测量）
                     let timer = TimerWheel::with_defaults().unwrap();
                     let service = timer.create_service();
+                    
+                    // 测量阶段：测量批量通知调度的性能
+                    let start = std::time::Instant::now();
                     
                     let mut task_ids = Vec::new();
                     for _ in 0..size {
@@ -235,8 +335,12 @@ fn bench_schedule_notify(c: &mut Criterion) {
                         task_ids.push(task_id);
                     }
                     
+                    total_duration += start.elapsed();
                     black_box(task_ids);
-                });
+                }
+                
+                total_duration
+            });
         });
     }
     
@@ -248,11 +352,19 @@ fn bench_schedule_with_callback(c: &mut Criterion) {
     let mut group = c.benchmark_group("schedule_with_callback");
     
     group.bench_function("schedule_with_simple_callback", |b| {
-        b.to_async(tokio::runtime::Runtime::new().unwrap())
-            .iter(|| async {
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        
+        b.to_async(&runtime).iter_custom(|iters| async move {
+            let mut total_duration = Duration::from_secs(0);
+            
+            for _ in 0..iters {
+                // 准备阶段：创建 timer、service 和 counter（不计入测量）
                 let timer = TimerWheel::with_defaults().unwrap();
                 let service = timer.create_service();
                 let counter = Arc::new(AtomicU32::new(0));
+                
+                // 测量阶段：只测量 schedule_once 的性能
+                let start = std::time::Instant::now();
                 
                 let counter_clone = Arc::clone(&counter);
                 let task_id = black_box(
@@ -267,8 +379,12 @@ fn bench_schedule_with_callback(c: &mut Criterion) {
                     ).await.unwrap()
                 );
                 
+                total_duration += start.elapsed();
                 black_box(task_id);
-            });
+            }
+            
+            total_duration
+        });
     });
     
     group.finish();
@@ -280,22 +396,33 @@ fn bench_cancel_no_wait(c: &mut Criterion) {
     
     for size in [10, 100, 1000].iter() {
         group.bench_with_input(BenchmarkId::from_parameter(size), size, |b, &size| {
-            b.to_async(tokio::runtime::Runtime::new().unwrap())
-                .iter(|| async move {
+            let runtime = tokio::runtime::Runtime::new().unwrap();
+            
+            b.to_async(&runtime).iter_custom(|iters| async move {
+                let mut total_duration = Duration::from_secs(0);
+                
+                for _ in 0..iters {
+                    // 准备阶段：创建 timer、service 和调度任务（不计入测量）
                     let timer = TimerWheel::with_defaults().unwrap();
                     let service = timer.create_service();
                     
-                    // 先批量调度任务
                     let callbacks: Vec<_> = (0..size)
                         .map(|_| (Duration::from_secs(10), || async {}))
                         .collect();
                     let task_ids = service.schedule_once_batch(callbacks).await.unwrap();
                     
-                    // 测量无等待取消操作的性能
+                    // 测量阶段：只测量 cancel_task_no_wait 的性能
+                    let start = std::time::Instant::now();
+                    
                     for task_id in task_ids {
                         service.cancel_task_no_wait(task_id).await.unwrap();
                     }
-                });
+                    
+                    total_duration += start.elapsed();
+                }
+                
+                total_duration
+            });
         });
     }
     
