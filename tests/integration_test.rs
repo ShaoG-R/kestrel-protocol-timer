@@ -233,3 +233,120 @@ async fn test_repeat_timer() {
     assert_eq!(count_before, count_after, "取消后定时器不应该再触发");
 }
 
+#[tokio::test]
+async fn test_batch_schedule() {
+    // 测试批量调度定时器
+    let timer = TimerWheel::with_defaults().unwrap();
+    let counter = Arc::new(AtomicU32::new(0));
+    
+    const BATCH_SIZE: usize = 100;
+    let start = Instant::now();
+    
+    // 创建批量回调
+    let callbacks: Vec<(Duration, _)> = (0..BATCH_SIZE)
+        .map(|i| {
+            let counter_clone = Arc::clone(&counter);
+            let delay = Duration::from_millis(50 + (i % 10) as u64);
+            let callback = move || {
+                let counter = Arc::clone(&counter_clone);
+                async move {
+                    counter.fetch_add(1, Ordering::SeqCst);
+                }
+            };
+            (delay, callback)
+        })
+        .collect();
+    
+    // 批量调度
+    let handles = timer.schedule_once_batch(callbacks).await.unwrap();
+    
+    println!("批量调度 {} 个定时器耗时: {:?}", BATCH_SIZE, start.elapsed());
+    assert_eq!(handles.len(), BATCH_SIZE);
+    
+    // 等待所有定时器触发
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    
+    let count = counter.load(Ordering::SeqCst);
+    println!("触发的定时器数量: {}", count);
+    assert_eq!(count, BATCH_SIZE as u32, "所有批量调度的定时器都应该被触发");
+}
+
+#[tokio::test]
+async fn test_batch_cancel() {
+    // 测试批量取消定时器
+    let timer = Arc::new(TimerWheel::with_defaults().unwrap());
+    const TIMER_COUNT: usize = 500;
+    
+    // 批量创建定时器
+    let callbacks: Vec<(Duration, _)> = (0..TIMER_COUNT)
+        .map(|_| {
+            let callback = || async {};
+            (Duration::from_secs(10), callback)
+        })
+        .collect();
+    
+    let handles = timer.schedule_once_batch(callbacks).await.unwrap();
+    assert_eq!(handles.len(), TIMER_COUNT);
+    
+    // 收集任务 ID
+    let task_ids: Vec<_> = handles.iter().map(|h| h.task_id()).collect();
+    
+    // 批量取消
+    let start = Instant::now();
+    let cancelled = timer.cancel_batch(&task_ids).await.unwrap();
+    let elapsed = start.elapsed();
+    
+    println!("批量取消 {} 个定时器耗时: {:?}", TIMER_COUNT, elapsed);
+    assert_eq!(cancelled, TIMER_COUNT, "所有定时器都应该被成功取消");
+}
+
+#[tokio::test]
+async fn test_batch_cancel_partial() {
+    // 测试部分批量取消
+    let timer = TimerWheel::with_defaults().unwrap();
+    
+    // 创建 10 个定时器
+    let callbacks: Vec<(Duration, _)> = (0..10)
+        .map(|_| (Duration::from_millis(100), || async {}))
+        .collect();
+    
+    let handles = timer.schedule_once_batch(callbacks).await.unwrap();
+    
+    // 取消前 5 个
+    let first_half: Vec<_> = handles[0..5].iter().map(|h| h.task_id()).collect();
+    let cancelled = timer.cancel_batch(&first_half).await.unwrap();
+    assert_eq!(cancelled, 5);
+    
+    // 等待剩余的定时器触发
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    
+    // 尝试取消已经触发的定时器
+    let second_half: Vec<_> = handles[5..10].iter().map(|h| h.task_id()).collect();
+    let cancelled_after = timer.cancel_batch(&second_half).await.unwrap();
+    assert_eq!(cancelled_after, 0, "已触发的定时器不应该被取消");
+}
+
+#[tokio::test]
+async fn test_batch_cancel_no_wait() {
+    // 测试无需等待结果的批量取消
+    let timer = TimerWheel::with_defaults().unwrap();
+    
+    // 批量创建定时器
+    let callbacks: Vec<(Duration, _)> = (0..100)
+        .map(|_| (Duration::from_secs(10), || async {}))
+        .collect();
+    
+    let handles = timer.schedule_once_batch(callbacks).await.unwrap();
+    let task_ids: Vec<_> = handles.iter().map(|h| h.task_id()).collect();
+    
+    // 批量取消（不等待结果）
+    let start = Instant::now();
+    timer.cancel_batch_no_wait(&task_ids);
+    let elapsed = start.elapsed();
+    
+    println!("批量取消（无等待）耗时: {:?}", elapsed);
+    
+    // 不等待结果的操作应该非常快（几微秒）
+    assert!(elapsed < Duration::from_millis(10), "无等待的批量取消应该非常快");
+}
+

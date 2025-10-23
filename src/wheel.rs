@@ -121,6 +121,50 @@ impl Wheel {
         task_id
     }
 
+    /// 批量插入定时器任务
+    ///
+    /// # 参数
+    /// - `tasks`: (延迟时间, 任务) 的元组列表
+    ///
+    /// # 返回
+    /// 任务 ID 列表
+    ///
+    /// # 性能优势
+    /// - 减少重复的边界检查和容量调整
+    /// - 对于相同延迟的任务，可以复用计算结果
+    pub fn insert_batch(&mut self, tasks: Vec<(Duration, TimerTask)>) -> Vec<TaskId> {
+        let mut task_ids = Vec::with_capacity(tasks.len());
+        
+        for (delay, mut task) in tasks {
+            let ticks = self.delay_to_ticks(delay);
+            let total_ticks = self.current_tick + ticks;
+            
+            // 计算槽位索引和轮次
+            let slot_index = (total_ticks as usize) & (self.slot_count - 1);
+            let rounds = (total_ticks / self.slot_count as u64)
+                .saturating_sub(self.current_tick / self.slot_count as u64) as u32;
+
+            task.deadline_tick = total_ticks;
+            task.rounds = rounds;
+
+            let task_id = task.id;
+            
+            // 获取任务在 Vec 中的索引位置
+            let vec_index = self.slots[slot_index].len();
+            let location = TaskLocation::new(slot_index, vec_index, task_id);
+
+            // 插入任务到槽位
+            self.slots[slot_index].push(task);
+            
+            // 记录任务位置
+            self.task_index.insert(task_id, location);
+            
+            task_ids.push(task_id);
+        }
+        
+        task_ids
+    }
+
     /// 取消定时器任务
     ///
     /// # 参数
@@ -149,6 +193,65 @@ impl Wheel {
             }
         }
         false
+    }
+
+    /// 批量取消定时器任务
+    ///
+    /// # 参数
+    /// - `task_ids`: 要取消的任务 ID 列表
+    ///
+    /// # 返回
+    /// 成功取消的任务数量
+    ///
+    /// # 性能优势
+    /// - 减少重复的 HashMap 查找开销
+    /// - 对同一槽位的多个取消操作可以批量处理
+    pub fn cancel_batch(&mut self, task_ids: &[TaskId]) -> usize {
+        let mut cancelled_count = 0;
+        
+        // 按槽位分组以优化批量取消
+        let mut tasks_by_slot: Vec<Vec<(TaskId, usize)>> = vec![Vec::new(); self.slot_count];
+        
+        // 收集需要取消的任务信息
+        for &task_id in task_ids {
+            if let Some(location) = self.task_index.get(&task_id) {
+                tasks_by_slot[location.slot_index].push((task_id, location.vec_index));
+            }
+        }
+        
+        // 对每个槽位进行批量处理
+        for (slot_index, tasks) in tasks_by_slot.iter_mut().enumerate() {
+            if tasks.is_empty() {
+                continue;
+            }
+            
+            // 按 vec_index 降序排序，从后往前删除避免索引失效
+            tasks.sort_by(|a, b| b.1.cmp(&a.1));
+            
+            let slot = &mut self.slots[slot_index];
+            
+            for &(task_id, vec_index) in tasks.iter() {
+                // 验证任务仍在预期位置
+                if vec_index < slot.len() && slot[vec_index].id == task_id {
+                    // 使用 swap_remove 移除任务
+                    slot.swap_remove(vec_index);
+                    
+                    // 更新被交换元素的索引
+                    if vec_index < slot.len() {
+                        let swapped_task_id = slot[vec_index].id;
+                        if let Some(swapped_location) = self.task_index.get_mut(&swapped_task_id) {
+                            swapped_location.vec_index = vec_index;
+                        }
+                    }
+                    
+                    // 从索引中移除
+                    self.task_index.remove(&task_id);
+                    cancelled_count += 1;
+                }
+            }
+        }
+        
+        cancelled_count
     }
 
     /// 推进时间轮，返回所有到期的任务
@@ -227,6 +330,86 @@ mod tests {
         } else {
             panic!("Expected InvalidSlotCount error");
         }
+    }
+
+    #[test]
+    fn test_insert_batch() {
+        use std::sync::Arc;
+        use crate::task::TimerTask;
+        
+        let mut wheel = Wheel::new(Duration::from_millis(10), 512).unwrap();
+        
+        // 创建批量任务
+        let tasks: Vec<(Duration, TimerTask)> = (0..10)
+            .map(|i| {
+                let callback = Arc::new(|| async {}) as Arc<dyn crate::task::TimerCallback>;
+                let task = TimerTask::once(0, 0, callback);
+                (Duration::from_millis(100 + i * 10), task)
+            })
+            .collect();
+        
+        let task_ids = wheel.insert_batch(tasks);
+        
+        assert_eq!(task_ids.len(), 10);
+        assert!(!wheel.is_empty());
+    }
+
+    #[test]
+    fn test_cancel_batch() {
+        use std::sync::Arc;
+        use crate::task::TimerTask;
+        
+        let mut wheel = Wheel::new(Duration::from_millis(10), 512).unwrap();
+        
+        // 插入多个任务
+        let mut task_ids = Vec::new();
+        for i in 0..10 {
+            let callback = Arc::new(|| async {}) as Arc<dyn crate::task::TimerCallback>;
+            let task = TimerTask::once(0, 0, callback);
+            let task_id = wheel.insert(Duration::from_millis(100 + i * 10), task);
+            task_ids.push(task_id);
+        }
+        
+        assert_eq!(task_ids.len(), 10);
+        
+        // 批量取消前 5 个任务
+        let to_cancel = &task_ids[0..5];
+        let cancelled_count = wheel.cancel_batch(to_cancel);
+        
+        assert_eq!(cancelled_count, 5);
+        
+        // 尝试再次取消相同的任务，应该返回 0
+        let cancelled_again = wheel.cancel_batch(to_cancel);
+        assert_eq!(cancelled_again, 0);
+        
+        // 取消剩余的任务
+        let remaining = &task_ids[5..10];
+        let cancelled_remaining = wheel.cancel_batch(remaining);
+        assert_eq!(cancelled_remaining, 5);
+        
+        assert!(wheel.is_empty());
+    }
+
+    #[test]
+    fn test_batch_operations_same_slot() {
+        use std::sync::Arc;
+        use crate::task::TimerTask;
+        
+        let mut wheel = Wheel::new(Duration::from_millis(10), 512).unwrap();
+        
+        // 插入多个相同延迟的任务（会进入同一个槽位）
+        let mut task_ids = Vec::new();
+        for _ in 0..20 {
+            let callback = Arc::new(|| async {}) as Arc<dyn crate::task::TimerCallback>;
+            let task = TimerTask::once(0, 0, callback);
+            let task_id = wheel.insert(Duration::from_millis(100), task);
+            task_ids.push(task_id);
+        }
+        
+        // 批量取消所有任务
+        let cancelled_count = wheel.cancel_batch(&task_ids);
+        assert_eq!(cancelled_count, 20);
+        assert!(wheel.is_empty());
     }
 }
 
