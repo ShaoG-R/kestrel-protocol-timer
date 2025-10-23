@@ -7,7 +7,7 @@ use futures::future;
 #[tokio::test]
 async fn test_large_scale_timers() {
     // 测试大规模并发定时器（10000+ 个）
-    let timer = Arc::new(TimerWheel::with_defaults());
+    let timer = Arc::new(TimerWheel::with_defaults().unwrap());
     let counter = Arc::new(AtomicU32::new(0));
     const TIMER_COUNT: u32 = 10_000;
 
@@ -29,7 +29,7 @@ async fn test_large_scale_timers() {
                         counter.fetch_add(1, Ordering::SeqCst);
                     }
                 },
-            ).await
+            ).await.unwrap()
         };
         futures.push(future);
     }
@@ -51,7 +51,7 @@ async fn test_large_scale_timers() {
 #[tokio::test]
 async fn test_timer_precision() {
     // 测试定时器的精度
-    let timer = TimerWheel::with_defaults();
+    let timer = TimerWheel::with_defaults().unwrap();
     let start_time = Arc::new(parking_lot::Mutex::new(None::<Instant>));
     let end_time = Arc::new(parking_lot::Mutex::new(None::<Instant>));
 
@@ -66,7 +66,7 @@ async fn test_timer_precision() {
                 *end_time.lock() = Some(Instant::now());
             }
         },
-    ).await;
+    ).await.unwrap();
 
     tokio::time::sleep(Duration::from_millis(150)).await;
 
@@ -86,7 +86,7 @@ async fn test_timer_precision() {
 #[tokio::test]
 async fn test_concurrent_operations() {
     // 测试并发操作（同时添加和取消定时器）
-    let timer = Arc::new(TimerWheel::with_defaults());
+    let timer = Arc::new(TimerWheel::with_defaults().unwrap());
     let counter = Arc::new(AtomicU32::new(0));
 
     // 并发创建所有定时器（5个任务 × 1000个定时器 = 5000个）
@@ -106,7 +106,7 @@ async fn test_concurrent_operations() {
                             counter.fetch_add(1, Ordering::SeqCst);
                         }
                     },
-                ).await
+                ).await.unwrap()
             };
             
             all_futures.push(future);
@@ -129,7 +129,7 @@ async fn test_concurrent_operations() {
 #[tokio::test]
 async fn test_timer_with_different_delays() {
     // 测试不同延迟的定时器
-    let timer = TimerWheel::with_defaults();
+    let timer = TimerWheel::with_defaults().unwrap();
     let results = Arc::new(parking_lot::Mutex::new(Vec::new()));
 
     let delays = vec![10, 20, 30, 50, 100, 150, 200];
@@ -145,7 +145,7 @@ async fn test_timer_with_different_delays() {
                     results.lock().push((idx, delay_ms));
                 }
             },
-        ).await;
+        ).await.unwrap();
     }
 
     // 等待所有定时器触发（等待时间需要大于最大延迟）
@@ -159,7 +159,7 @@ async fn test_timer_with_different_delays() {
 #[tokio::test]
 async fn test_memory_efficiency() {
     // 测试内存效率 - 创建大量定时器然后取消
-    let timer = Arc::new(TimerWheel::with_defaults());
+    let timer = Arc::new(TimerWheel::with_defaults().unwrap());
 
     // 并发创建 5000 个定时器
     let mut create_futures = Vec::new();
@@ -169,7 +169,7 @@ async fn test_memory_efficiency() {
             timer_clone.schedule_once(
                 Duration::from_secs(10),
                 || async {},
-            ).await
+            ).await.unwrap()
         };
         create_futures.push(future);
     }
@@ -197,7 +197,7 @@ async fn test_memory_efficiency() {
 #[tokio::test]
 async fn test_repeat_timer() {
     // 测试周期性定时器
-    let timer = TimerWheel::with_defaults();
+    let timer = TimerWheel::with_defaults().unwrap();
     let counter = Arc::new(AtomicU32::new(0));
     let counter_clone = Arc::clone(&counter);
 
@@ -210,7 +210,7 @@ async fn test_repeat_timer() {
                 counter.fetch_add(1, Ordering::SeqCst);
             }
         },
-    ).await;
+    ).await.unwrap();
 
     // 等待足够时间让定时器触发多次
     tokio::time::sleep(Duration::from_millis(250)).await;

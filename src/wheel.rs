@@ -1,3 +1,4 @@
+use crate::error::TimerError;
 use crate::task::{TaskId, TaskLocation, TimerTask};
 use rustc_hash::FxHashMap;
 use std::time::Duration;
@@ -26,25 +27,37 @@ impl Wheel {
     /// # 参数
     /// - `tick_duration`: 每个 tick 的时间长度
     /// - `slot_count`: 槽位数量（必须是 2 的幂次方以优化取模运算）
-    pub fn new(tick_duration: Duration, slot_count: usize) -> Self {
-        assert!(slot_count > 0, "槽位数量必须大于 0");
-        assert!(
-            slot_count.is_power_of_two(),
-            "槽位数量必须是 2 的幂次方"
-        );
+    ///
+    /// # 返回
+    /// - `Ok(Self)`: 成功创建时间轮
+    /// - `Err(TimerError)`: 槽位数量无效
+    pub fn new(tick_duration: Duration, slot_count: usize) -> Result<Self, TimerError> {
+        if slot_count == 0 {
+            return Err(TimerError::InvalidSlotCount {
+                slot_count,
+                reason: "槽位数量必须大于 0",
+            });
+        }
+        
+        if !slot_count.is_power_of_two() {
+            return Err(TimerError::InvalidSlotCount {
+                slot_count,
+                reason: "槽位数量必须是 2 的幂次方",
+            });
+        }
 
         let mut slots = Vec::with_capacity(slot_count);
         for _ in 0..slot_count {
             slots.push(Vec::new());
         }
 
-        Self {
+        Ok(Self {
             slots,
             current_tick: 0,
             slot_count,
             tick_duration,
             task_index: FxHashMap::default(),
-        }
+        })
     }
 
     /// 获取当前 tick
@@ -169,7 +182,7 @@ mod tests {
 
     #[test]
     fn test_wheel_creation() {
-        let wheel = Wheel::new(Duration::from_millis(10), 512);
+        let wheel = Wheel::new(Duration::from_millis(10), 512).unwrap();
         assert_eq!(wheel.slot_count(), 512);
         assert_eq!(wheel.current_tick(), 0);
         assert!(wheel.is_empty());
@@ -177,16 +190,22 @@ mod tests {
 
     #[test]
     fn test_delay_to_ticks() {
-        let wheel = Wheel::new(Duration::from_millis(10), 512);
+        let wheel = Wheel::new(Duration::from_millis(10), 512).unwrap();
         assert_eq!(wheel.delay_to_ticks(Duration::from_millis(100)), 10);
         assert_eq!(wheel.delay_to_ticks(Duration::from_millis(50)), 5);
         assert_eq!(wheel.delay_to_ticks(Duration::from_millis(1)), 1); // 最小 1 tick
     }
 
     #[test]
-    #[should_panic(expected = "槽位数量必须是 2 的幂次方")]
     fn test_wheel_invalid_slot_count() {
-        Wheel::new(Duration::from_millis(10), 100);
+        let result = Wheel::new(Duration::from_millis(10), 100);
+        assert!(result.is_err());
+        if let Err(TimerError::InvalidSlotCount { slot_count, reason }) = result {
+            assert_eq!(slot_count, 100);
+            assert_eq!(reason, "槽位数量必须是 2 的幂次方");
+        } else {
+            panic!("Expected InvalidSlotCount error");
+        }
     }
 }
 
