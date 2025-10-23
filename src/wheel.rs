@@ -98,13 +98,19 @@ impl Wheel {
         
         // 计算槽位索引和轮次
         let slot_index = (total_ticks as usize) & (self.slot_count - 1);
-        let rounds = (ticks / self.slot_count as u64) as u32;
+        
+        // 修复：使用 total_ticks 计算轮次，而不是 ticks
+        // 轮次 = 任务到期时的轮数 - 当前轮数
+        let rounds = (total_ticks / self.slot_count as u64).saturating_sub(self.current_tick / self.slot_count as u64) as u32;
 
         task.deadline_tick = total_ticks;
         task.rounds = rounds;
 
         let task_id = task.id;
-        let location = TaskLocation::new(slot_index, task_id);
+        
+        // 获取任务在 Vec 中的索引位置（插入前的长度就是新任务的索引）
+        let vec_index = self.slots[slot_index].len();
+        let location = TaskLocation::new(slot_index, vec_index, task_id);
 
         // 插入任务到槽位
         self.slots[slot_index].push(task);
@@ -125,8 +131,20 @@ impl Wheel {
     pub fn cancel(&mut self, task_id: TaskId) -> bool {
         if let Some(location) = self.task_index.remove(&task_id) {
             let slot = &mut self.slots[location.slot_index];
-            if let Some(pos) = slot.iter().position(|t| t.id == task_id) {
-                slot.swap_remove(pos);
+            
+            // 使用 vec_index 直接访问，O(1) 复杂度
+            if location.vec_index < slot.len() && slot[location.vec_index].id == task_id {
+                // 使用 swap_remove 移除任务
+                slot.swap_remove(location.vec_index);
+                
+                // 如果被交换的元素不是最后一个，需要更新被交换元素的索引
+                if location.vec_index < slot.len() {
+                    let swapped_task_id = slot[location.vec_index].id;
+                    if let Some(swapped_location) = self.task_index.get_mut(&swapped_task_id) {
+                        swapped_location.vec_index = location.vec_index;
+                    }
+                }
+                
                 return true;
             }
         }
@@ -154,7 +172,10 @@ impl Wheel {
                 // 还有轮次，减少轮次并重新插入
                 task.rounds -= 1;
                 let task_id = task.id;
-                let location = TaskLocation::new(slot_index, task_id);
+                
+                // 记录任务在 pending_tasks 中的索引位置
+                let vec_index = pending_tasks.len();
+                let location = TaskLocation::new(slot_index, vec_index, task_id);
                 self.task_index.insert(task_id, location);
                 pending_tasks.push(task);
             } else {
