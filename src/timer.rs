@@ -1,10 +1,13 @@
 use crate::error::TimerError;
-use crate::task::{CallbackWrapper, TaskId, TimerCallback, TimerTask};
+use crate::task::{CallbackWrapper, CompletionNotifier, TaskId, TimerCallback, TimerTask};
 use crate::wheel::Wheel;
 use crossbeam::channel::{Sender, Receiver};
 use std::time::Duration;
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
+
+/// 完成通知接收器，用于接收定时器完成通知
+pub struct CompletionReceiver(pub oneshot::Receiver<()>);
 
 /// 时间轮操作类型
 enum WheelOperation {
@@ -38,11 +41,12 @@ enum WheelOperation {
 pub struct TimerHandle {
     task_id: TaskId,
     op_sender: Sender<WheelOperation>,
+    completion_rx: CompletionReceiver,
 }
 
 impl TimerHandle {
-    fn new(task_id: TaskId, op_sender: Sender<WheelOperation>) -> Self {
-        Self { task_id, op_sender }
+    fn new(task_id: TaskId, op_sender: Sender<WheelOperation>, completion_rx: oneshot::Receiver<()>) -> Self {
+        Self { task_id, op_sender, completion_rx: CompletionReceiver(completion_rx) }
     }
 
     /// 取消定时器（异步获取结果）
@@ -103,6 +107,50 @@ impl TimerHandle {
     pub fn task_id(&self) -> TaskId {
         self.task_id
     }
+
+    /// 获取完成通知接收器的可变引用
+    ///
+    /// # 示例
+    /// ```no_run
+    /// # use timer::TimerWheel;
+    /// # use std::time::Duration;
+    /// # #[tokio::main]
+    /// # async fn main() {
+    /// let timer = TimerWheel::with_defaults().unwrap();
+    /// let handle = timer.schedule_once(Duration::from_secs(1), || async {
+    ///     println!("Timer fired!");
+    /// }).await.unwrap();
+    /// 
+    /// // 等待定时器完成（使用 into_completion_receiver 消耗句柄）
+    /// handle.into_completion_receiver().0.await.ok();
+    /// println!("Timer completed!");
+    /// # }
+    /// ```
+    pub fn completion_receiver(&mut self) -> &mut CompletionReceiver {
+        &mut self.completion_rx
+    }
+
+    /// 消耗句柄，返回完成通知接收器
+    ///
+    /// # 示例
+    /// ```no_run
+    /// # use timer::TimerWheel;
+    /// # use std::time::Duration;
+    /// # #[tokio::main]
+    /// # async fn main() {
+    /// let timer = TimerWheel::with_defaults().unwrap();
+    /// let handle = timer.schedule_once(Duration::from_secs(1), || async {
+    ///     println!("Timer fired!");
+    /// }).await.unwrap();
+    /// 
+    /// // 等待定时器完成
+    /// handle.into_completion_receiver().0.await.ok();
+    /// println!("Timer completed!");
+    /// # }
+    /// ```
+    pub fn into_completion_receiver(self) -> CompletionReceiver {
+        self.completion_rx
+    }
 }
 
 /// 批量定时器句柄，用于管理批量调度的定时器
@@ -114,11 +162,12 @@ impl TimerHandle {
 pub struct BatchHandle {
     task_ids: Vec<TaskId>,
     op_sender: Sender<WheelOperation>,
+    completion_rxs: Vec<oneshot::Receiver<()>>,
 }
 
 impl BatchHandle {
-    fn new(task_ids: Vec<TaskId>, op_sender: Sender<WheelOperation>) -> Self {
-        Self { task_ids, op_sender }
+    fn new(task_ids: Vec<TaskId>, op_sender: Sender<WheelOperation>, completion_rxs: Vec<oneshot::Receiver<()>>) -> Self {
+        Self { task_ids, op_sender, completion_rxs }
     }
 
     /// 批量取消所有定时器（异步获取结果）
@@ -205,7 +254,10 @@ impl BatchHandle {
     pub fn into_handles(self) -> Vec<TimerHandle> {
         self.task_ids
             .into_iter()
-            .map(|task_id| TimerHandle::new(task_id, self.op_sender.clone()))
+            .zip(self.completion_rxs.into_iter())
+            .map(|(task_id, rx)| {
+                TimerHandle::new(task_id, self.op_sender.clone(), rx)
+            })
             .collect()
     }
 
@@ -222,6 +274,46 @@ impl BatchHandle {
     /// 获取所有任务 ID 的引用
     pub fn task_ids(&self) -> &[TaskId] {
         &self.task_ids
+    }
+
+    /// 获取所有完成通知接收器的引用
+    ///
+    /// # 返回
+    /// 所有任务的完成通知接收器列表引用
+    pub fn completion_receivers(&mut self) -> &mut Vec<oneshot::Receiver<()>> {
+        &mut self.completion_rxs
+    }
+
+    /// 消耗句柄，返回所有完成通知接收器
+    ///
+    /// # 返回
+    /// 所有任务的完成通知接收器列表
+    ///
+    /// # 示例
+    /// ```no_run
+    /// # use timer::TimerWheel;
+    /// # use std::time::Duration;
+    /// # #[tokio::main]
+    /// # async fn main() {
+    /// let timer = TimerWheel::with_defaults().unwrap();
+    /// let callbacks: Vec<_> = (0..3)
+    ///     .map(|_| (Duration::from_secs(1), || async {}))
+    ///     .collect();
+    /// let batch = timer.schedule_once_batch(callbacks).await.unwrap();
+    /// 
+    /// // 获取所有完成通知接收器
+    /// let receivers = batch.into_completion_receivers();
+    /// for rx in receivers {
+    ///     tokio::spawn(async move {
+    ///         if rx.await.is_ok() {
+    ///             println!("A timer completed!");
+    ///         }
+    ///     });
+    /// }
+    /// # }
+    /// ```
+    pub fn into_completion_receivers(self) -> Vec<oneshot::Receiver<()>> {
+        self.completion_rxs
     }
 }
 
@@ -252,6 +344,7 @@ impl IntoIterator for BatchHandle {
     fn into_iter(self) -> Self::IntoIter {
         BatchHandleIter {
             task_ids: self.task_ids.into_iter(),
+            completion_rxs: self.completion_rxs.into_iter(),
             op_sender: self.op_sender,
         }
     }
@@ -260,6 +353,7 @@ impl IntoIterator for BatchHandle {
 /// BatchHandle 的迭代器
 pub struct BatchHandleIter {
     task_ids: std::vec::IntoIter<TaskId>,
+    completion_rxs: std::vec::IntoIter<oneshot::Receiver<()>>,
     op_sender: Sender<WheelOperation>,
 }
 
@@ -267,9 +361,12 @@ impl Iterator for BatchHandleIter {
     type Item = TimerHandle;
 
     fn next(&mut self) -> Option<Self::Item> {
-        self.task_ids.next().map(|task_id| {
-            TimerHandle::new(task_id, self.op_sender.clone())
-        })
+        match (self.task_ids.next(), self.completion_rxs.next()) {
+            (Some(task_id), Some(rx)) => {
+                Some(TimerHandle::new(task_id, self.op_sender.clone(), rx))
+            }
+            _ => None,
+        }
     }
 
     fn size_hint(&self) -> (usize, Option<usize>) {
@@ -373,7 +470,12 @@ impl TimerWheel {
         use std::sync::Arc;
         let (tx, rx) = oneshot::channel();
         let callback_wrapper = Arc::new(callback) as CallbackWrapper;
-        let task = TimerTask::once(0, 0, callback_wrapper);
+        
+        // 创建完成通知 channel
+        let (completion_tx, completion_rx) = oneshot::channel();
+        let notifier = CompletionNotifier(completion_tx);
+        
+        let task = TimerTask::once(0, 0, Some(callback_wrapper), notifier);
         
         let _ = self.op_sender.send(WheelOperation::Insert {
             delay,
@@ -382,7 +484,7 @@ impl TimerWheel {
         });
         
         let task_id = rx.await.map_err(|_| TimerError::ChannelClosed)?;
-        Ok(TimerHandle::new(task_id, self.op_sender.clone()))
+        Ok(TimerHandle::new(task_id, self.op_sender.clone(), completion_rx))
     }
 
     /// 批量调度一次性定时器
@@ -446,12 +548,21 @@ impl TimerWheel {
         use std::sync::Arc;
         let (tx, rx) = oneshot::channel();
         
+        // 为每个任务创建完成通知 channel
+        let mut completion_rxs = Vec::with_capacity(callbacks.len());
+        
         // 将回调转换为 TimerTask
         let tasks: Vec<(Duration, TimerTask)> = callbacks
             .into_iter()
             .map(|(delay, callback)| {
                 let callback_wrapper = Arc::new(callback) as CallbackWrapper;
-                let task = TimerTask::once(0, 0, callback_wrapper);
+                
+                // 创建完成通知 channel
+                let (completion_tx, completion_rx) = oneshot::channel();
+                completion_rxs.push(completion_rx);
+                let notifier = CompletionNotifier(completion_tx);
+                
+                let task = TimerTask::once(0, 0, Some(callback_wrapper), notifier);
                 (delay, task)
             })
             .collect();
@@ -462,60 +573,53 @@ impl TimerWheel {
         });
         
         let task_ids = rx.await.map_err(|_| TimerError::ChannelClosed)?;
-        Ok(BatchHandle::new(task_ids, self.op_sender.clone()))
+        Ok(BatchHandle::new(task_ids, self.op_sender.clone(), completion_rxs))
     }
 
-    /// 调度周期性定时器
+
+    /// 调度一次性通知定时器（无回调，仅通知）
     ///
     /// # 参数
-    /// - `interval`: 周期间隔
-    /// - `callback`: 实现了 TimerCallback trait 的回调对象（会在每个周期被调用）
+    /// - `delay`: 延迟时间
     ///
     /// # 返回
-    /// - `Ok(TimerHandle)`: 成功调度，返回定时器句柄，可用于取消定时器
+    /// - `Ok(TimerHandle)`: 成功调度，返回定时器句柄，可通过 `into_completion_receiver()` 获取通知接收器
     /// - `Err(TimerError)`: 内部通信通道已关闭
     ///
     /// # 示例
     /// ```no_run
     /// use timer::TimerWheel;
     /// use std::time::Duration;
-    /// use std::sync::Arc;
-    /// use std::sync::atomic::{AtomicU32, Ordering};
     ///
     /// #[tokio::main]
     /// async fn main() {
     ///     let timer = TimerWheel::with_defaults().unwrap();
-    ///     let counter = Arc::new(AtomicU32::new(0));
-    ///     let counter_clone = Arc::clone(&counter);
     ///     
-    ///     let handle = timer.schedule_repeat(Duration::from_secs(1), move || {
-    ///         let counter = Arc::clone(&counter_clone);
-    ///         async move {
-    ///             let count = counter.fetch_add(1, Ordering::SeqCst);
-    ///             println!("Periodic timer fired! Count: {}", count + 1);
-    ///         }
-    ///     }).await.unwrap();
+    ///     let handle = timer.schedule_once_notify(Duration::from_secs(1)).await.unwrap();
     ///     
-    ///     tokio::time::sleep(Duration::from_secs(5)).await;
+    ///     // 获取完成通知接收器
+    ///     handle.into_completion_receiver().0.await.ok();
+    ///     println!("Timer completed!");
     /// }
     /// ```
-    pub async fn schedule_repeat<C>(&self, interval: Duration, callback: C) -> Result<TimerHandle, TimerError>
-    where
-        C: TimerCallback,
-    {
-        use std::sync::Arc;
+    pub async fn schedule_once_notify(&self, delay: Duration) -> Result<TimerHandle, TimerError> {
         let (tx, rx) = oneshot::channel();
-        let callback_wrapper = Arc::new(callback) as CallbackWrapper;
-        let task = TimerTask::repeat(0, 0, interval, callback_wrapper);
+        
+        // 创建完成通知 channel
+        let (completion_tx, completion_rx) = oneshot::channel();
+        let notifier = CompletionNotifier(completion_tx);
+        
+        // 无回调的任务
+        let task = TimerTask::once(0, 0, None, notifier);
         
         let _ = self.op_sender.send(WheelOperation::Insert {
-            delay: interval,
+            delay,
             task,
             result_tx: tx,
         });
         
         let task_id = rx.await.map_err(|_| TimerError::ChannelClosed)?;
-        Ok(TimerHandle::new(task_id, self.op_sender.clone()))
+        Ok(TimerHandle::new(task_id, self.op_sender.clone(), completion_rx))
     }
 
     /// 取消定时器（异步获取结果）
@@ -665,22 +769,20 @@ impl TimerWheel {
             // 3. 执行到期任务
             for task in expired_tasks {
                 let callback = task.get_callback();
-                let is_repeat = task.is_repeat();
-                let task_interval = task.interval();
                 
-                // 在独立的 tokio 任务中执行回调，避免阻塞时间轮
-                tokio::spawn(async move {
-                    let future = callback.call();
-                    future.await;
-                });
-
-                // 4. 如果是周期性任务，直接重新调度（无需通过队列）
-                if is_repeat {
-                    if let Some(interval) = task_interval {
-                        let new_task = task.clone_for_repeat(0, 0);
-                        wheel.insert(interval, new_task);
-                    }
+                // 移动task的所有权来获取completion_notifier
+                let notifier = task.completion_notifier;
+                
+                // 在独立的 tokio 任务中执行回调
+                if let Some(callback) = callback {
+                    tokio::spawn(async move {
+                        let future = callback.call();
+                        future.await;
+                    });
                 }
+                
+                // 发送完成通知（在回调执行后立即发送，不等待回调完成）
+                let _ = notifier.0.send(());
             }
         }
     }

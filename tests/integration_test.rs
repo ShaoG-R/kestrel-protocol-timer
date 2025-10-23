@@ -195,45 +195,6 @@ async fn test_memory_efficiency() {
 }
 
 #[tokio::test]
-async fn test_repeat_timer() {
-    // 测试周期性定时器
-    let timer = TimerWheel::with_defaults().unwrap();
-    let counter = Arc::new(AtomicU32::new(0));
-    let counter_clone = Arc::clone(&counter);
-
-    // 创建一个每 50ms 触发一次的周期性定时器
-    let handle = timer.schedule_repeat(
-        Duration::from_millis(50),
-        move || {
-            let counter = Arc::clone(&counter_clone);
-            async move {
-                counter.fetch_add(1, Ordering::SeqCst);
-            }
-        },
-    ).await.unwrap();
-
-    // 等待足够时间让定时器触发多次
-    tokio::time::sleep(Duration::from_millis(250)).await;
-
-    let count = counter.load(Ordering::SeqCst);
-    println!("周期性定时器触发次数: {}", count);
-    
-    // 250ms 内应该触发大约 4-5 次（考虑到调度延迟）
-    assert!(count >= 3 && count <= 6, "周期性定时器应该触发多次，实际: {}", count);
-
-    // 取消定时器
-    let cancel_result = handle.cancel().await.unwrap();
-    assert!(cancel_result);
-    
-    // 等待一段时间，确保定时器不再触发
-    let count_before = counter.load(Ordering::SeqCst);
-    tokio::time::sleep(Duration::from_millis(150)).await;
-    let count_after = counter.load(Ordering::SeqCst);
-    
-    assert_eq!(count_before, count_after, "取消后定时器不应该再触发");
-}
-
-#[tokio::test]
 async fn test_batch_schedule() {
     // 测试批量调度定时器
     let timer = TimerWheel::with_defaults().unwrap();

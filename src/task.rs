@@ -2,7 +2,7 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
+use tokio::sync::oneshot;
 
 /// 全局唯一的任务 ID 生成器
 static NEXT_TASK_ID: AtomicU64 = AtomicU64::new(1);
@@ -70,33 +70,8 @@ where
 /// 回调包装器类型
 pub type CallbackWrapper = Arc<dyn TimerCallback>;
 
-/// 定时器任务类型
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TaskType {
-    /// 一次性任务
-    Once,
-    
-    /// 周期性任务
-    Repeat {
-        /// 重复间隔
-        interval: Duration,
-    },
-}
-
-impl TaskType {
-    /// 检查是否是周期性任务
-    pub fn is_repeat(&self) -> bool {
-        matches!(self, TaskType::Repeat { .. })
-    }
-
-    /// 获取重复间隔（如果是周期性任务）
-    pub fn interval(&self) -> Option<Duration> {
-        match self {
-            TaskType::Repeat { interval } => Some(*interval),
-            TaskType::Once => None,
-        }
-    }
-}
+/// 完成通知器，用于在任务完成时发送通知
+pub struct CompletionNotifier(pub oneshot::Sender<()>);
 
 /// 定时器任务
 pub struct TimerTask {
@@ -109,11 +84,11 @@ pub struct TimerTask {
     /// 轮次计数（用于超出时间轮范围的任务）
     pub rounds: u32,
     
-    /// 异步回调函数（使用 Arc 可以共享，支持周期性任务）
-    pub callback: CallbackWrapper,
+    /// 异步回调函数（可选）
+    pub callback: Option<CallbackWrapper>,
     
-    /// 任务类型（一次性或周期性）
-    pub task_type: TaskType,
+    /// 完成通知器（用于在任务完成时发送通知）
+    pub completion_notifier: CompletionNotifier,
 }
 
 impl TimerTask {
@@ -121,57 +96,21 @@ impl TimerTask {
     pub fn once(
         deadline_tick: u64,
         rounds: u32,
-        callback: CallbackWrapper,
+        callback: Option<CallbackWrapper>,
+        completion_notifier: CompletionNotifier,
     ) -> Self {
         Self {
             id: TaskId::new(),
             deadline_tick,
             rounds,
             callback,
-            task_type: TaskType::Once,
+            completion_notifier,
         }
     }
 
-    /// 创建周期性定时器任务
-    pub fn repeat(
-        deadline_tick: u64,
-        rounds: u32,
-        interval: Duration,
-        callback: CallbackWrapper,
-    ) -> Self {
-        Self {
-            id: TaskId::new(),
-            deadline_tick,
-            rounds,
-            callback,
-            task_type: TaskType::Repeat { interval },
-        }
-    }
-
-    /// 检查是否是周期性任务
-    pub fn is_repeat(&self) -> bool {
-        self.task_type.is_repeat()
-    }
-
-    /// 获取重复间隔（如果是周期性任务）
-    pub fn interval(&self) -> Option<Duration> {
-        self.task_type.interval()
-    }
-
-    /// 获取回调函数的克隆（用于周期性任务）
-    pub fn get_callback(&self) -> CallbackWrapper {
-        Arc::clone(&self.callback)
-    }
-
-    /// 克隆任务用于周期性执行（保持相同的 ID）
-    pub fn clone_for_repeat(&self, new_deadline_tick: u64, new_rounds: u32) -> Self {
-        Self {
-            id: self.id, // 保持相同的任务 ID，以便能够取消周期性任务
-            deadline_tick: new_deadline_tick,
-            rounds: new_rounds,
-            callback: Arc::clone(&self.callback),
-            task_type: self.task_type,
-        }
+    /// 获取回调函数的克隆（如果存在）
+    pub fn get_callback(&self) -> Option<CallbackWrapper> {
+        self.callback.as_ref().map(Arc::clone)
     }
 }
 

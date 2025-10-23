@@ -57,8 +57,8 @@ mod timer;
 
 // 重新导出公共 API
 pub use error::TimerError;
-pub use task::{CallbackWrapper, TaskId, TaskType, TimerCallback};
-pub use timer::{BatchHandle, BatchHandleIter, TimerHandle, TimerWheel};
+pub use task::{CallbackWrapper, CompletionNotifier, TaskId, TimerCallback};
+pub use timer::{BatchHandle, BatchHandleIter, CompletionReceiver, TimerHandle, TimerWheel};
 
 #[cfg(test)]
 mod tests {
@@ -76,7 +76,7 @@ mod tests {
         timer.schedule_once(
             Duration::from_millis(50),
             move || {
-                let counter = Arc::clone(&counter_clone);
+                let counter =  Arc::clone(&counter_clone);
                 async move {
                     counter.fetch_add(1, Ordering::SeqCst);
                 }
@@ -140,5 +140,74 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(200)).await;
         // 只有 2 个定时器应该被触发
         assert_eq!(counter.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn test_completion_notification_once() {
+        let timer = TimerWheel::with_defaults().unwrap();
+        let counter = Arc::new(AtomicU32::new(0));
+        let counter_clone = Arc::clone(&counter);
+
+        let handle = timer.schedule_once(
+            Duration::from_millis(50),
+            move || {
+                let counter = Arc::clone(&counter_clone);
+                async move {
+                    counter.fetch_add(1, Ordering::SeqCst);
+                }
+            },
+        ).await.unwrap();
+
+        // 等待完成通知
+        handle.into_completion_receiver().0.await.expect("Should receive completion notification");
+
+        // 验证回调已执行（等待一下以确保回调执行完成）
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        assert_eq!(counter.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn test_notify_only_timer_once() {
+        let timer = TimerWheel::with_defaults().unwrap();
+        
+        let handle = timer.schedule_once_notify(Duration::from_millis(50)).await.unwrap();
+
+        // 等待完成通知（无回调，仅通知）
+        handle.into_completion_receiver().0.await.expect("Should receive completion notification");
+    }
+
+    #[tokio::test]
+    async fn test_batch_completion_notifications() {
+        let timer = TimerWheel::with_defaults().unwrap();
+        let counter = Arc::new(AtomicU32::new(0));
+
+        // 创建批量回调
+        let callbacks: Vec<(Duration, _)> = (0..5)
+            .map(|i| {
+                let counter = Arc::clone(&counter);
+                let delay = Duration::from_millis(50 + i * 10);
+                let callback = move || {
+                    let counter = Arc::clone(&counter);
+                    async move {
+                        counter.fetch_add(1, Ordering::SeqCst);
+                    }
+                };
+                (delay, callback)
+            })
+            .collect();
+
+        let batch = timer.schedule_once_batch(callbacks).await.unwrap();
+        let receivers = batch.into_completion_receivers();
+
+        // 等待所有完成通知
+        for rx in receivers {
+            rx.await.expect("Should receive completion notification");
+        }
+
+        // 等待一下确保回调执行完成
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        // 验证所有回调都已执行
+        assert_eq!(counter.load(Ordering::SeqCst), 5);
     }
 }
