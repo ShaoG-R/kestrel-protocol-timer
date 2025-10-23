@@ -54,11 +54,13 @@ mod error;
 mod task;
 mod wheel;
 mod timer;
+mod service;
 
 // 重新导出公共 API
 pub use error::TimerError;
 pub use task::{CallbackWrapper, CompletionNotifier, TaskId, TimerCallback};
 pub use timer::{BatchHandle, BatchHandleIter, CompletionReceiver, TimerHandle, TimerWheel};
+pub use service::TimerService;
 
 #[cfg(test)]
 mod tests {

@@ -1,5 +1,5 @@
 use crate::error::TimerError;
-use crate::task::{CallbackWrapper, CompletionNotifier, TaskId, TimerCallback, TimerTask};
+use crate::task::{CallbackWrapper, CompletionNotifier, TaskId, TimerCallback, TimerTask, TimerWheelId};
 use crate::wheel::Wheel;
 use crossbeam::channel::{Sender, Receiver};
 use std::time::Duration;
@@ -10,7 +10,7 @@ use tokio::task::JoinHandle;
 pub struct CompletionReceiver(pub oneshot::Receiver<()>);
 
 /// 时间轮操作类型
-enum WheelOperation {
+pub(crate) enum WheelOperation {
     /// 插入定时器任务
     Insert {
         delay: Duration,
@@ -39,14 +39,15 @@ enum WheelOperation {
 /// 注意：此类型不实现 Clone，以防止重复取消同一个定时器。
 /// 每个定时器只应有一个所有者。
 pub struct TimerHandle {
-    task_id: TaskId,
-    op_sender: Sender<WheelOperation>,
-    completion_rx: CompletionReceiver,
+    pub(crate) task_id: TaskId,
+    pub(crate) timer_wheel_id: TimerWheelId,
+    pub(crate) op_sender: Sender<WheelOperation>,
+    pub(crate) completion_rx: CompletionReceiver,
 }
 
 impl TimerHandle {
-    fn new(task_id: TaskId, op_sender: Sender<WheelOperation>, completion_rx: oneshot::Receiver<()>) -> Self {
-        Self { task_id, op_sender, completion_rx: CompletionReceiver(completion_rx) }
+    fn new(task_id: TaskId, timer_wheel_id: TimerWheelId, op_sender: Sender<WheelOperation>, completion_rx: oneshot::Receiver<()>) -> Self {
+        Self { task_id, timer_wheel_id, op_sender, completion_rx: CompletionReceiver(completion_rx) }
     }
 
     /// 取消定时器（异步获取结果）
@@ -108,6 +109,11 @@ impl TimerHandle {
         self.task_id
     }
 
+    /// 获取时间轮 ID
+    pub(crate) fn timer_wheel_id(&self) -> TimerWheelId {
+        self.timer_wheel_id
+    }
+
     /// 获取完成通知接收器的可变引用
     ///
     /// # 示例
@@ -160,14 +166,15 @@ impl TimerHandle {
 /// 注意：此类型不实现 Clone，以防止重复取消同一批定时器。
 /// 如需访问单个定时器句柄，请使用 `into_iter()` 或 `into_handles()` 进行转换。
 pub struct BatchHandle {
-    task_ids: Vec<TaskId>,
-    op_sender: Sender<WheelOperation>,
-    completion_rxs: Vec<oneshot::Receiver<()>>,
+    pub(crate) task_ids: Vec<TaskId>,
+    pub(crate) timer_wheel_id: TimerWheelId,
+    pub(crate) op_sender: Sender<WheelOperation>,
+    pub(crate) completion_rxs: Vec<oneshot::Receiver<()>>,
 }
 
 impl BatchHandle {
-    fn new(task_ids: Vec<TaskId>, op_sender: Sender<WheelOperation>, completion_rxs: Vec<oneshot::Receiver<()>>) -> Self {
-        Self { task_ids, op_sender, completion_rxs }
+    fn new(task_ids: Vec<TaskId>, timer_wheel_id: TimerWheelId, op_sender: Sender<WheelOperation>, completion_rxs: Vec<oneshot::Receiver<()>>) -> Self {
+        Self { task_ids, timer_wheel_id, op_sender, completion_rxs }
     }
 
     /// 批量取消所有定时器（异步获取结果）
@@ -252,11 +259,12 @@ impl BatchHandle {
     /// # }
     /// ```
     pub fn into_handles(self) -> Vec<TimerHandle> {
+        let timer_wheel_id = self.timer_wheel_id;
         self.task_ids
             .into_iter()
             .zip(self.completion_rxs.into_iter())
             .map(|(task_id, rx)| {
-                TimerHandle::new(task_id, self.op_sender.clone(), rx)
+                TimerHandle::new(task_id, timer_wheel_id, self.op_sender.clone(), rx)
             })
             .collect()
     }
@@ -274,6 +282,11 @@ impl BatchHandle {
     /// 获取所有任务 ID 的引用
     pub fn task_ids(&self) -> &[TaskId] {
         &self.task_ids
+    }
+
+    /// 获取时间轮 ID
+    pub fn timer_wheel_id(&self) -> TimerWheelId {
+        self.timer_wheel_id
     }
 
     /// 获取所有完成通知接收器的引用
@@ -345,6 +358,7 @@ impl IntoIterator for BatchHandle {
         BatchHandleIter {
             task_ids: self.task_ids.into_iter(),
             completion_rxs: self.completion_rxs.into_iter(),
+            timer_wheel_id: self.timer_wheel_id,
             op_sender: self.op_sender,
         }
     }
@@ -354,6 +368,7 @@ impl IntoIterator for BatchHandle {
 pub struct BatchHandleIter {
     task_ids: std::vec::IntoIter<TaskId>,
     completion_rxs: std::vec::IntoIter<oneshot::Receiver<()>>,
+    timer_wheel_id: TimerWheelId,
     op_sender: Sender<WheelOperation>,
 }
 
@@ -363,7 +378,7 @@ impl Iterator for BatchHandleIter {
     fn next(&mut self) -> Option<Self::Item> {
         match (self.task_ids.next(), self.completion_rxs.next()) {
             (Some(task_id), Some(rx)) => {
-                Some(TimerHandle::new(task_id, self.op_sender.clone(), rx))
+                Some(TimerHandle::new(task_id, self.timer_wheel_id, self.op_sender.clone(), rx))
             }
             _ => None,
         }
@@ -382,6 +397,9 @@ impl ExactSizeIterator for BatchHandleIter {
 
 /// 时间轮定时器管理器
 pub struct TimerWheel {
+    /// 时间轮唯一标识符
+    wheel_id: TimerWheelId,
+    
     /// 操作队列发送端
     op_sender: Sender<WheelOperation>,
     
@@ -420,6 +438,7 @@ impl TimerWheel {
         });
 
         Ok(Self {
+            wheel_id: TimerWheelId::new(),
             op_sender,
             tick_handle: Some(tick_handle),
         })
@@ -484,7 +503,7 @@ impl TimerWheel {
         });
         
         let task_id = rx.await.map_err(|_| TimerError::ChannelClosed)?;
-        Ok(TimerHandle::new(task_id, self.op_sender.clone(), completion_rx))
+        Ok(TimerHandle::new(task_id, self.wheel_id, self.op_sender.clone(), completion_rx))
     }
 
     /// 批量调度一次性定时器
@@ -573,7 +592,7 @@ impl TimerWheel {
         });
         
         let task_ids = rx.await.map_err(|_| TimerError::ChannelClosed)?;
-        Ok(BatchHandle::new(task_ids, self.op_sender.clone(), completion_rxs))
+        Ok(BatchHandle::new(task_ids, self.wheel_id, self.op_sender.clone(), completion_rxs))
     }
 
 
@@ -619,7 +638,7 @@ impl TimerWheel {
         });
         
         let task_id = rx.await.map_err(|_| TimerError::ChannelClosed)?;
-        Ok(TimerHandle::new(task_id, self.op_sender.clone(), completion_rx))
+        Ok(TimerHandle::new(task_id, self.wheel_id, self.op_sender.clone(), completion_rx))
     }
 
     /// 取消定时器（异步获取结果）
