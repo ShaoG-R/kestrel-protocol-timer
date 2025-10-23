@@ -20,9 +20,9 @@ enum ServiceCommand {
         task_id: TaskId,
         result_tx: Option<oneshot::Sender<bool>>,
     },
-    /// 从活跃任务集合中移除任务（用于批量取消后的清理）
-    RemoveTask {
-        task_id: TaskId,
+    /// 批量从活跃任务集合中移除任务（优化批量取消性能）
+    RemoveTasks {
+        task_ids: Vec<TaskId>,
     },
     /// 关闭 Service
     Shutdown,
@@ -331,13 +331,7 @@ impl TimerService {
     /// # }
     /// ```
     pub async fn cancel_batch(&self, task_ids: &[TaskId]) -> Result<usize, TimerError> {
-        // 过滤出活跃的任务
-        let active_task_ids: Vec<TaskId> = task_ids
-            .iter()
-            .copied()
-            .collect();
-
-        if active_task_ids.is_empty() {
+        if task_ids.is_empty() {
             return Ok(0);
         }
 
@@ -345,19 +339,20 @@ impl TimerService {
         let (tx, rx) = oneshot::channel();
         self.op_sender
             .send(WheelOperation::CancelBatch {
-                task_ids: active_task_ids.clone(),
+                task_ids: task_ids.to_vec(),
                 result_tx: Some(tx),
             })
             .map_err(|_| TimerError::ChannelClosed)?;
 
         let cancelled_count = rx.await.map_err(|_| TimerError::ChannelClosed)?;
 
-        // 批量从活跃任务集合中移除（通过发送多个移除通知）
-        for task_id in &active_task_ids {
-            let _ = self.command_tx
-                .send(ServiceCommand::RemoveTask { task_id: *task_id })
-                .await;
-        }
+        // 使用批量移除命令，一次性发送所有需要移除的任务ID
+        self.command_tx
+            .send(ServiceCommand::RemoveTasks { 
+                task_ids: task_ids.to_vec() 
+            })
+            .await
+            .map_err(|_| TimerError::ChannelClosed)?;
 
         Ok(cancelled_count)
     }
@@ -404,12 +399,13 @@ impl TimerService {
             })
             .map_err(|_| TimerError::ChannelClosed)?;
 
-        // 批量从活跃任务集合中移除
-        for task_id in task_ids {
-            let _ = self.command_tx
-                .send(ServiceCommand::RemoveTask { task_id: *task_id })
-                .await;
-        }
+        // 使用批量移除命令，一次性发送所有需要移除的任务ID
+        self.command_tx
+            .send(ServiceCommand::RemoveTasks { 
+                task_ids: task_ids.to_vec() 
+            })
+            .await
+            .map_err(|_| TimerError::ChannelClosed)?;
 
         Ok(())
     }
@@ -690,40 +686,51 @@ impl ServiceActor {
                             // 检查任务是否存在于活跃任务集合中
                             if self.active_tasks.contains(&task_id) {
                                 // 发送取消操作到时间轮
-                                let (tx, rx) = oneshot::channel();
-                                let send_result = self.op_sender.send(WheelOperation::Cancel {
-                                    task_id,
-                                    result_tx: Some(tx),
-                                });
-                                
-                                if send_result.is_ok() {
-                                    // 在新协程中监听取消结果
-                                    let remove_tx = self.remove_task_tx.clone();
-                                    tokio::spawn(async move {
-                                        match rx.await {
-                                            Ok(success) => {
-                                                if success {
-                                                    // 取消成功，通知 actor 移除任务
-                                                    let _ = remove_tx.send(task_id).await;
-                                                }
-                                                // 如果有 result_tx，发送结果给调用者
-                                                if let Some(result_tx) = result_tx {
-                                                    let _ = result_tx.send(success);
-                                                }
-                                            }
-                                            Err(_) => {
-                                                // 通信失败
-                                                if let Some(result_tx) = result_tx {
-                                                    let _ = result_tx.send(false);
-                                                }
-                                            }
-                                        }
+                                if result_tx.is_some() {
+                                    // 需要等待结果
+                                    let (tx, rx) = oneshot::channel();
+                                    let send_result = self.op_sender.send(WheelOperation::Cancel {
+                                        task_id,
+                                        result_tx: Some(tx),
                                     });
-                                } else {
-                                    // 发送失败
-                                    if let Some(result_tx) = result_tx {
-                                        let _ = result_tx.send(false);
+                                    
+                                    if send_result.is_ok() {
+                                        // 在新协程中监听取消结果
+                                        let remove_tx = self.remove_task_tx.clone();
+                                        tokio::spawn(async move {
+                                            match rx.await {
+                                                Ok(success) => {
+                                                    if success {
+                                                        // 取消成功，通知 actor 移除任务
+                                                        let _ = remove_tx.send(task_id).await;
+                                                    }
+                                                    // 发送结果给调用者
+                                                    if let Some(result_tx) = result_tx {
+                                                        let _ = result_tx.send(success);
+                                                    }
+                                                }
+                                                Err(_) => {
+                                                    // 通信失败
+                                                    if let Some(result_tx) = result_tx {
+                                                        let _ = result_tx.send(false);
+                                                    }
+                                                }
+                                            }
+                                        });
+                                    } else {
+                                        // 发送失败
+                                        if let Some(result_tx) = result_tx {
+                                            let _ = result_tx.send(false);
+                                        }
                                     }
+                                } else {
+                                    // 不需要等待结果，直接发送取消请求（快速路径）
+                                    let _ = self.op_sender.send(WheelOperation::Cancel {
+                                        task_id,
+                                        result_tx: None,
+                                    });
+                                    // 立即从活跃任务中移除（乐观假设会成功）
+                                    self.active_tasks.remove(&task_id);
                                 }
                             } else {
                                 // 任务不存在
@@ -732,9 +739,11 @@ impl ServiceActor {
                                 }
                             }
                         }
-                        ServiceCommand::RemoveTask { task_id } => {
-                            // 从活跃任务集合中移除任务
-                            self.active_tasks.remove(&task_id);
+                        ServiceCommand::RemoveTasks { task_ids } => {
+                            // 批量从活跃任务集合中移除任务
+                            for task_id in task_ids {
+                                self.active_tasks.remove(&task_id);
+                            }
                         }
                         ServiceCommand::Shutdown => {
                             break;

@@ -206,11 +206,27 @@ impl Wheel {
     /// # 性能优势
     /// - 减少重复的 HashMap 查找开销
     /// - 对同一槽位的多个取消操作可以批量处理
+    /// - 使用不稳定排序提升性能
+    /// - 小批量（≤10）跳过排序，直接处理
     pub fn cancel_batch(&mut self, task_ids: &[TaskId]) -> usize {
         let mut cancelled_count = 0;
         
+        // 小批量优化：直接逐个取消，避免分组和排序的开销
+        if task_ids.len() <= 10 {
+            for &task_id in task_ids {
+                if self.cancel(task_id) {
+                    cancelled_count += 1;
+                }
+            }
+            return cancelled_count;
+        }
+        
         // 按槽位分组以优化批量取消
-        let mut tasks_by_slot: Vec<Vec<(TaskId, usize)>> = vec![Vec::new(); self.slot_count];
+        // 使用 with_capacity 预分配，避免重复扩容
+        let mut tasks_by_slot: Vec<Vec<(TaskId, usize)>> = Vec::with_capacity(self.slot_count);
+        for _ in 0..self.slot_count {
+            tasks_by_slot.push(Vec::new());
+        }
         
         // 收集需要取消的任务信息
         for &task_id in task_ids {
@@ -226,7 +242,8 @@ impl Wheel {
             }
             
             // 按 vec_index 降序排序，从后往前删除避免索引失效
-            tasks.sort_by(|a, b| b.1.cmp(&a.1));
+            // 使用不稳定排序提升性能
+            tasks.sort_unstable_by(|a, b| b.1.cmp(&a.1));
             
             let slot = &mut self.slots[slot_index];
             
