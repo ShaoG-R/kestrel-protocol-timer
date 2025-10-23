@@ -292,10 +292,9 @@ struct ServiceActor {
     /// 超时发送端
     timeout_tx: mpsc::Sender<TaskId>,
     /// 操作发送端（用于取消操作等）
-    #[allow(dead_code)]
     op_sender: Option<Sender<WheelOperation>>,
-    /// 任务ID到操作发送端的映射（用于取消操作）
-    task_senders: std::collections::HashMap<TaskId, Sender<WheelOperation>>,
+    /// 活跃任务ID集合
+    active_tasks: std::collections::HashSet<TaskId>,
 }
 
 impl ServiceActor {
@@ -304,7 +303,7 @@ impl ServiceActor {
             command_rx,
             timeout_tx,
             op_sender: None,
-            task_senders: std::collections::HashMap::new(),
+            active_tasks: std::collections::HashSet::new(),
         }
     }
 
@@ -319,8 +318,8 @@ impl ServiceActor {
                 Some((task_id, _result)) = futures.next() => {
                     // 任务超时，转发 TaskId
                     let _ = self.timeout_tx.send(task_id).await;
-                    // 从 task_senders 中移除该任务
-                    self.task_senders.remove(&task_id);
+                    // 从活跃任务集合中移除该任务
+                    self.active_tasks.remove(&task_id);
                     // 任务会自动从 FuturesUnordered 中移除
                 }
                 
@@ -335,10 +334,15 @@ impl ServiceActor {
                                 ..
                             } = batch;
                             
-                            // 将所有任务添加到 futures 和 task_senders 中
+                            // 记录 op_sender（第一次添加时）
+                            if self.op_sender.is_none() {
+                                self.op_sender = Some(op_sender);
+                            }
+                            
+                            // 将所有任务添加到 futures 和 active_tasks 中
                             for (task_id, rx) in task_ids.into_iter().zip(completion_rxs.into_iter()) {
-                                // 记录到 task_senders
-                                self.task_senders.insert(task_id, op_sender.clone());
+                                // 记录到活跃任务集合
+                                self.active_tasks.insert(task_id);
                                 
                                 let future: BoxFuture<'static, (TaskId, Result<(), tokio::sync::oneshot::error::RecvError>)> = Box::pin(async move {
                                     (task_id, rx.await)
@@ -354,8 +358,13 @@ impl ServiceActor {
                                 ..
                             } = handle;
                             
-                            // 记录到 task_senders
-                            self.task_senders.insert(task_id, op_sender);
+                            // 记录 op_sender（第一次添加时）
+                            if self.op_sender.is_none() {
+                                self.op_sender = Some(op_sender);
+                            }
+                            
+                            // 记录到活跃任务集合
+                            self.active_tasks.insert(task_id);
                             
                             // 添加到 futures 中
                             let future: BoxFuture<'static, (TaskId, Result<(), tokio::sync::oneshot::error::RecvError>)> = Box::pin(async move {
@@ -364,26 +373,30 @@ impl ServiceActor {
                             futures.push(future);
                         }
                         ServiceCommand::CancelTask { task_id, result_tx } => {
-                            // 从 task_senders 中查找对应的 op_sender
-                            let cancel_result = if let Some(op_sender) = self.task_senders.get(&task_id) {
-                                // 发送取消操作到时间轮
-                                let (tx, rx) = oneshot::channel();
-                                let send_result = op_sender.send(WheelOperation::Cancel {
-                                    task_id,
-                                    result_tx: Some(tx),
-                                });
-                                
-                                if send_result.is_ok() {
-                                    // 等待取消结果
-                                    match rx.await {
-                                        Ok(success) => {
-                                            if success {
-                                                // 取消成功，从 task_senders 中移除
-                                                self.task_senders.remove(&task_id);
+                            // 检查任务是否存在于活跃任务集合中
+                            let cancel_result = if self.active_tasks.contains(&task_id) {
+                                if let Some(op_sender) = &self.op_sender {
+                                    // 发送取消操作到时间轮
+                                    let (tx, rx) = oneshot::channel();
+                                    let send_result = op_sender.send(WheelOperation::Cancel {
+                                        task_id,
+                                        result_tx: Some(tx),
+                                    });
+                                    
+                                    if send_result.is_ok() {
+                                        // 等待取消结果
+                                        match rx.await {
+                                            Ok(success) => {
+                                                if success {
+                                                    // 取消成功，从活跃任务集合中移除
+                                                    self.active_tasks.remove(&task_id);
+                                                }
+                                                success
                                             }
-                                            success
+                                            Err(_) => false,
                                         }
-                                        Err(_) => false,
+                                    } else {
+                                        false
                                     }
                                 } else {
                                     false
