@@ -91,7 +91,7 @@ fn bench_wheel_cancel(c: &mut Criterion) {
                 let start = std::time::Instant::now();
                 
                 let result = black_box(
-                    timer.cancel(task_id).await.unwrap()
+                    timer.cancel(task_id)
                 );
                 
                 total_duration += start.elapsed();
@@ -130,7 +130,7 @@ fn bench_wheel_cancel_batch(c: &mut Criterion) {
                     let start = std::time::Instant::now();
                     
                     let cancelled = black_box(
-                        timer.cancel_batch(&task_ids).await.unwrap()
+                        timer.cancel_batch(&task_ids)
                     );
                     
                     total_duration += start.elapsed();
@@ -170,7 +170,7 @@ fn bench_wheel_cancel_batch_same_slot(c: &mut Criterion) {
                     let start = std::time::Instant::now();
                     
                     let cancelled = black_box(
-                        timer.cancel_batch(&task_ids).await.unwrap()
+                        timer.cancel_batch(&task_ids)
                     );
                     
                     total_duration += start.elapsed();
@@ -319,7 +319,7 @@ fn bench_wheel_mixed_operations(c: &mut Criterion) {
                     
                     // 取消其中一半
                     let to_cancel: Vec<_> = batch.task_ids().iter().step_by(2).copied().collect();
-                    let _ = timer.cancel_batch(&to_cancel).await.unwrap();
+                    let _ = timer.cancel_batch(&to_cancel);
                     
                     // 等待一个 tick
                     tokio::time::sleep(Duration::from_millis(10)).await;
@@ -360,7 +360,7 @@ fn bench_wheel_cancel_small_batch(c: &mut Criterion) {
                     let start = std::time::Instant::now();
                     
                     let cancelled = black_box(
-                        timer.cancel_batch(&task_ids).await.unwrap()
+                        timer.cancel_batch(&task_ids)
                     );
                     
                     total_duration += start.elapsed();
@@ -401,7 +401,7 @@ fn bench_wheel_batch_multiple_slots(c: &mut Criterion) {
                     let start = std::time::Instant::now();
                     
                     let cancelled = black_box(
-                        timer.cancel_batch(&task_ids).await.unwrap()
+                        timer.cancel_batch(&task_ids)
                     );
                     
                     total_duration += start.elapsed();

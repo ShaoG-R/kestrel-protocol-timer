@@ -1,9 +1,10 @@
 use crate::task::{CallbackWrapper, TaskId, TimerCallback, TimerWheelId};
-use crate::timer::{BatchHandle, TimerHandle, WheelOperation};
+use crate::timer::{BatchHandle, TimerHandle};
 use crate::error::TimerError;
-use crossbeam::channel::Sender;
+use crate::wheel::Wheel;
 use futures::stream::{FuturesUnordered, StreamExt};
 use futures::future::BoxFuture;
+use parking_lot::Mutex;
 use rustc_hash::FxHashSet;
 use std::sync::Arc;
 use std::time::Duration;
@@ -57,7 +58,7 @@ enum ServiceCommand {
 ///     service.add_batch_handle(batch).await.unwrap();
 ///     
 ///     // 接收超时通知
-///     let mut rx = service.timeout_receiver();
+///     let mut rx = service.take_receiver().unwrap();
 ///     while let Some(task_id) = rx.recv().await {
 ///         println!("Task {:?} completed", task_id);
 ///     }
@@ -72,8 +73,8 @@ pub struct TimerService {
     actor_handle: Option<JoinHandle<()>>,
     /// 时间轮 ID（用于验证所有句柄来自同一个时间轮）
     timer_wheel_id: TimerWheelId,
-    /// 时间轮操作发送端（用于直接调度定时器）
-    op_sender: Sender<WheelOperation>,
+    /// 时间轮引用（用于直接调度定时器）
+    wheel: Arc<Mutex<Wheel>>,
 }
 
 impl TimerService {
@@ -81,7 +82,7 @@ impl TimerService {
     ///
     /// # 参数
     /// - `timer_wheel_id`: 时间轮 ID
-    /// - `op_sender`: 时间轮操作发送端
+    /// - `wheel`: 时间轮引用
     ///
     /// # 注意
     /// 通常不直接调用此方法，而是使用 `TimerWheel::create_service()` 来创建。
@@ -96,11 +97,11 @@ impl TimerService {
     ///     let mut service = timer.create_service();
     /// }
     /// ```
-    pub(crate) fn new(timer_wheel_id: TimerWheelId, op_sender: Sender<WheelOperation>) -> Self {
+    pub(crate) fn new(timer_wheel_id: TimerWheelId, wheel: Arc<Mutex<Wheel>>) -> Self {
         let (command_tx, command_rx) = mpsc::channel(100);
         let (timeout_tx, timeout_rx) = mpsc::channel(1000);
 
-        let actor = ServiceActor::new(command_rx, timeout_tx, op_sender.clone());
+        let actor = ServiceActor::new(command_rx, timeout_tx, wheel.clone());
         let actor_handle = tokio::spawn(async move {
             actor.run().await;
         });
@@ -110,7 +111,7 @@ impl TimerService {
             timeout_rx: Some(timeout_rx),
             actor_handle: Some(actor_handle),
             timer_wheel_id,
-            op_sender,
+            wheel,
         }
     }
 
@@ -301,7 +302,7 @@ impl TimerService {
             .map_err(|_| TimerError::ChannelClosed)
     }
 
-    /// 批量取消任务（等待结果）
+    /// 批量取消任务
     ///
     /// 使用底层的批量取消操作一次性取消多个任务，性能优于循环调用 cancel_task。
     ///
@@ -309,8 +310,7 @@ impl TimerService {
     /// - `task_ids`: 要取消的任务 ID 列表
     ///
     /// # 返回
-    /// - `Ok(usize)`: 成功取消的任务数量
-    /// - `Err(TimerError)`: 取消失败
+    /// 成功取消的任务数量
     ///
     /// # 示例
     /// ```no_run
@@ -327,88 +327,29 @@ impl TimerService {
     /// let task_ids = service.schedule_once_batch(callbacks).await.unwrap();
     /// 
     /// // 批量取消
-    /// let cancelled = service.cancel_batch(&task_ids).await.unwrap();
+    /// let cancelled = service.cancel_batch(&task_ids).await;
     /// println!("成功取消 {} 个任务", cancelled);
     /// # }
     /// ```
-    pub async fn cancel_batch(&self, task_ids: &[TaskId]) -> Result<usize, TimerError> {
+    pub async fn cancel_batch(&self, task_ids: &[TaskId]) -> usize {
         if task_ids.is_empty() {
-            return Ok(0);
+            return 0;
         }
 
         // 直接使用底层的批量取消
-        let (tx, rx) = oneshot::channel();
-        self.op_sender
-            .send(WheelOperation::CancelBatch {
-                task_ids: task_ids.to_vec(),
-                result_tx: Some(tx),
-            })
-            .map_err(|_| TimerError::ChannelClosed)?;
-
-        let cancelled_count = rx.await.map_err(|_| TimerError::ChannelClosed)?;
+        let cancelled_count = {
+            let mut wheel = self.wheel.lock();
+            wheel.cancel_batch(task_ids)
+        };
 
         // 使用批量移除命令，一次性发送所有需要移除的任务ID
-        self.command_tx
+        let _ = self.command_tx
             .send(ServiceCommand::RemoveTasks { 
                 task_ids: task_ids.to_vec() 
             })
-            .await
-            .map_err(|_| TimerError::ChannelClosed)?;
+            .await;
 
-        Ok(cancelled_count)
-    }
-
-    /// 批量取消任务（无需等待结果）
-    ///
-    /// 立即发送批量取消请求并返回，不等待取消结果。
-    ///
-    /// # 参数
-    /// - `task_ids`: 要取消的任务 ID 列表
-    ///
-    /// # 返回
-    /// - `Ok(())`: 成功发送取消请求
-    /// - `Err(TimerError)`: 发送命令失败
-    ///
-    /// # 示例
-    /// ```no_run
-    /// # use timer::{TimerWheel, TimerService};
-    /// # use std::time::Duration;
-    /// # #[tokio::main]
-    /// # async fn main() {
-    /// let timer = TimerWheel::with_defaults().unwrap();
-    /// let service = timer.create_service();
-    /// 
-    /// let callbacks: Vec<_> = (0..10)
-    ///     .map(|_| (Duration::from_secs(10), || async {}))
-    ///     .collect();
-    /// let task_ids = service.schedule_once_batch(callbacks).await.unwrap();
-    /// 
-    /// // 批量取消，不等待结果
-    /// service.cancel_batch_no_wait(&task_ids).await.unwrap();
-    /// # }
-    /// ```
-    pub async fn cancel_batch_no_wait(&self, task_ids: &[TaskId]) -> Result<(), TimerError> {
-        if task_ids.is_empty() {
-            return Ok(());
-        }
-
-        // 直接使用底层的批量取消
-        self.op_sender
-            .send(WheelOperation::CancelBatch {
-                task_ids: task_ids.to_vec(),
-                result_tx: None,
-            })
-            .map_err(|_| TimerError::ChannelClosed)?;
-
-        // 使用批量移除命令，一次性发送所有需要移除的任务ID
-        self.command_tx
-            .send(ServiceCommand::RemoveTasks { 
-                task_ids: task_ids.to_vec() 
-            })
-            .await
-            .map_err(|_| TimerError::ChannelClosed)?;
-
-        Ok(())
+        cancelled_count
     }
 
     /// 调度一次性定时器
@@ -444,7 +385,7 @@ impl TimerService {
         C: TimerCallback,
     {
         // 创建任务并获取句柄
-        let handle = self.create_timer_handle(delay, Some(Arc::new(callback))).await?;
+        let handle = self.create_timer_handle(delay, Some(Arc::new(callback)))?;
         let task_id = handle.task_id();
         
         // 自动添加到服务管理
@@ -488,7 +429,7 @@ impl TimerService {
         C: TimerCallback,
     {
         // 创建批量任务并获取句柄
-        let batch_handle = self.create_batch_handle(callbacks).await?;
+        let batch_handle = self.create_batch_handle(callbacks)?;
         let task_ids = batch_handle.task_ids().to_vec();
         
         // 自动添加到服务管理
@@ -525,7 +466,7 @@ impl TimerService {
     /// ```
     pub async fn schedule_once_notify(&self, delay: Duration) -> Result<TaskId, TimerError> {
         // 创建无回调任务并获取句柄
-        let handle = self.create_timer_handle(delay, None).await?;
+        let handle = self.create_timer_handle(delay, None)?;
         let task_id = handle.task_id();
         
         // 自动添加到服务管理
@@ -535,21 +476,21 @@ impl TimerService {
     }
 
     /// 内部方法：创建定时器句柄
-    async fn create_timer_handle(
+    fn create_timer_handle(
         &self,
         delay: Duration,
         callback: Option<CallbackWrapper>,
     ) -> Result<TimerHandle, TimerError> {
         crate::timer::TimerWheel::create_timer_handle_internal(
             self.timer_wheel_id,
-            &self.op_sender,
+            &self.wheel,
             delay,
             callback
-        ).await
+        )
     }
 
     /// 内部方法：创建批量定时器句柄
-    async fn create_batch_handle<C>(
+    fn create_batch_handle<C>(
         &self,
         callbacks: Vec<(Duration, C)>,
     ) -> Result<BatchHandle, TimerError>
@@ -558,9 +499,9 @@ impl TimerService {
     {
         crate::timer::TimerWheel::create_batch_handle_internal(
             self.timer_wheel_id,
-            &self.op_sender,
+            &self.wheel,
             callbacks
-        ).await
+        )
     }
 
     /// 优雅关闭 TimerService
@@ -601,26 +542,19 @@ struct ServiceActor {
     command_rx: mpsc::Receiver<ServiceCommand>,
     /// 超时发送端
     timeout_tx: mpsc::Sender<TaskId>,
-    /// 操作发送端（用于取消操作等）
-    op_sender: Sender<WheelOperation>,
+    /// 时间轮引用（用于取消操作等）
+    wheel: Arc<Mutex<Wheel>>,
     /// 活跃任务ID集合（使用 FxHashSet 提升性能）
     active_tasks: FxHashSet<TaskId>,
-    /// 内部通知接收端（用于移除已取消的任务）
-    remove_task_rx: mpsc::Receiver<TaskId>,
-    /// 内部通知发送端（用于移除已取消的任务）
-    remove_task_tx: mpsc::Sender<TaskId>,
 }
 
 impl ServiceActor {
-    fn new(command_rx: mpsc::Receiver<ServiceCommand>, timeout_tx: mpsc::Sender<TaskId>, op_sender: Sender<WheelOperation>) -> Self {
-        let (remove_task_tx, remove_task_rx) = mpsc::channel(100);
+    fn new(command_rx: mpsc::Receiver<ServiceCommand>, timeout_tx: mpsc::Sender<TaskId>, wheel: Arc<Mutex<Wheel>>) -> Self {
         Self {
             command_rx,
             timeout_tx,
-            op_sender,
+            wheel,
             active_tasks: FxHashSet::default(),
-            remove_task_rx,
-            remove_task_tx,
         }
     }
 
@@ -638,12 +572,6 @@ impl ServiceActor {
                     // 从活跃任务集合中移除该任务
                     self.active_tasks.remove(&task_id);
                     // 任务会自动从 FuturesUnordered 中移除
-                }
-                
-                // 监听内部移除任务通知
-                Some(task_id) = self.remove_task_rx.recv() => {
-                    // 从活跃任务集合中移除已取消的任务
-                    self.active_tasks.remove(&task_id);
                 }
                 
                 // 监听命令
@@ -686,52 +614,20 @@ impl ServiceActor {
                         ServiceCommand::CancelTask { task_id, result_tx } => {
                             // 检查任务是否存在于活跃任务集合中
                             if self.active_tasks.contains(&task_id) {
-                                // 发送取消操作到时间轮
-                                if result_tx.is_some() {
-                                    // 需要等待结果
-                                    let (tx, rx) = oneshot::channel();
-                                    let send_result = self.op_sender.send(WheelOperation::Cancel {
-                                        task_id,
-                                        result_tx: Some(tx),
-                                    });
-                                    
-                                    if send_result.is_ok() {
-                                        // 在新协程中监听取消结果
-                                        let remove_tx = self.remove_task_tx.clone();
-                                        tokio::spawn(async move {
-                                            match rx.await {
-                                                Ok(success) => {
-                                                    if success {
-                                                        // 取消成功，通知 actor 移除任务
-                                                        let _ = remove_tx.send(task_id).await;
-                                                    }
-                                                    // 发送结果给调用者
-                                                    if let Some(result_tx) = result_tx {
-                                                        let _ = result_tx.send(success);
-                                                    }
-                                                }
-                                                Err(_) => {
-                                                    // 通信失败
-                                                    if let Some(result_tx) = result_tx {
-                                                        let _ = result_tx.send(false);
-                                                    }
-                                                }
-                                            }
-                                        });
-                                    } else {
-                                        // 发送失败
-                                        if let Some(result_tx) = result_tx {
-                                            let _ = result_tx.send(false);
-                                        }
-                                    }
-                                } else {
-                                    // 不需要等待结果，直接发送取消请求（快速路径）
-                                    let _ = self.op_sender.send(WheelOperation::Cancel {
-                                        task_id,
-                                        result_tx: None,
-                                    });
-                                    // 立即从活跃任务中移除（乐观假设会成功）
+                                // 直接取消任务
+                                let success = {
+                                    let mut wheel = self.wheel.lock();
+                                    wheel.cancel(task_id)
+                                };
+                                
+                                if success {
+                                    // 取消成功，从活跃任务中移除
                                     self.active_tasks.remove(&task_id);
+                                }
+                                
+                                // 发送结果给调用者
+                                if let Some(result_tx) = result_tx {
+                                    let _ = result_tx.send(success);
                                 }
                             } else {
                                 // 任务不存在
@@ -1278,7 +1174,7 @@ mod tests {
         assert_eq!(task_ids.len(), 10);
 
         // 批量取消所有任务
-        let cancelled = service.cancel_batch(&task_ids).await.unwrap();
+        let cancelled = service.cancel_batch(&task_ids).await;
         assert_eq!(cancelled, 10, "All 10 tasks should be cancelled");
 
         // 等待确保回调不会执行
@@ -1309,41 +1205,12 @@ mod tests {
 
         // 只取消前5个任务
         let to_cancel: Vec<_> = task_ids.iter().take(5).copied().collect();
-        let cancelled = service.cancel_batch(&to_cancel).await.unwrap();
+        let cancelled = service.cancel_batch(&to_cancel).await;
         assert_eq!(cancelled, 5, "5 tasks should be cancelled");
 
         // 等待确保前5个回调不会执行
         tokio::time::sleep(Duration::from_millis(100)).await;
         assert_eq!(counter.load(Ordering::SeqCst), 0, "Cancelled tasks should not execute");
-    }
-
-    #[tokio::test]
-    async fn test_cancel_batch_no_wait_direct() {
-        let timer = TimerWheel::with_defaults().unwrap();
-        let service = timer.create_service();
-        let counter = Arc::new(AtomicU32::new(0));
-
-        // 批量调度定时器
-        let callbacks: Vec<_> = (0..10)
-            .map(|_| {
-                let counter = Arc::clone(&counter);
-                (Duration::from_secs(10), move || {
-                    let counter = Arc::clone(&counter);
-                    async move {
-                        counter.fetch_add(1, Ordering::SeqCst);
-                    }
-                })
-            })
-            .collect();
-
-        let task_ids = service.schedule_once_batch(callbacks).await.unwrap();
-
-        // 使用 no_wait 批量取消
-        service.cancel_batch_no_wait(&task_ids).await.unwrap();
-
-        // 等待确保回调不会执行
-        tokio::time::sleep(Duration::from_millis(200)).await;
-        assert_eq!(counter.load(Ordering::SeqCst), 0, "No callbacks should have been executed");
     }
 
     #[tokio::test]
@@ -1353,7 +1220,7 @@ mod tests {
 
         // 取消空列表
         let empty: Vec<TaskId> = vec![];
-        let cancelled = service.cancel_batch(&empty).await.unwrap();
+        let cancelled = service.cancel_batch(&empty).await;
         assert_eq!(cancelled, 0, "No tasks should be cancelled");
     }
 }

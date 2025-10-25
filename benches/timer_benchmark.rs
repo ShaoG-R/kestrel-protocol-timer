@@ -103,7 +103,7 @@ fn bench_timer_cancel_single(c: &mut Criterion) {
                 let start = std::time::Instant::now();
                 
                 let result = black_box(
-                    timer.cancel(task_id).await.unwrap()
+                    timer.cancel(task_id)
                 );
                 
                 total_duration += start.elapsed();
@@ -142,7 +142,7 @@ fn bench_timer_cancel_batch(c: &mut Criterion) {
                     let start = std::time::Instant::now();
                     
                     let cancelled = black_box(
-                        timer.cancel_batch(&task_ids).await.unwrap()
+                        timer.cancel_batch(&task_ids)
                     );
                     
                     total_duration += start.elapsed();
@@ -180,7 +180,7 @@ fn bench_handle_cancel(c: &mut Criterion) {
                 let start = std::time::Instant::now();
                 
                 let result = black_box(
-                    handle.cancel().await.unwrap()
+                    handle.cancel()
                 );
                 
                 total_duration += start.elapsed();
@@ -194,39 +194,6 @@ fn bench_handle_cancel(c: &mut Criterion) {
     group.finish();
 }
 
-/// 基准测试：TimerHandle.cancel_no_wait()
-fn bench_handle_cancel_no_wait(c: &mut Criterion) {
-    let mut group = c.benchmark_group("handle_cancel_no_wait");
-    
-    group.bench_function("cancel_no_wait", |b| {
-        let runtime = tokio::runtime::Runtime::new().unwrap();
-        
-        b.to_async(&runtime).iter_custom(|iters| async move {
-            let mut total_duration = Duration::from_secs(0);
-            
-            for _ in 0..iters {
-                // 准备阶段：创建 timer 和调度任务（不计入测量）
-                let timer = TimerWheel::with_defaults().unwrap();
-                
-                let handle = timer.schedule_once(
-                    Duration::from_secs(10),
-                    || async {}
-                ).await.unwrap();
-                
-                // 测量阶段：只测量 handle.cancel_no_wait 的性能
-                let start = std::time::Instant::now();
-                
-                handle.cancel_no_wait();
-                
-                total_duration += start.elapsed();
-            }
-            
-            total_duration
-        });
-    });
-    
-    group.finish();
-}
 
 /// 基准测试：BatchHandle.cancel_all()
 fn bench_batch_handle_cancel_all(c: &mut Criterion) {
@@ -252,7 +219,7 @@ fn bench_batch_handle_cancel_all(c: &mut Criterion) {
                     let start = std::time::Instant::now();
                     
                     let cancelled = black_box(
-                        batch.cancel_all().await.unwrap()
+                        batch.cancel_all()
                     );
                     
                     total_duration += start.elapsed();
@@ -267,41 +234,6 @@ fn bench_batch_handle_cancel_all(c: &mut Criterion) {
     group.finish();
 }
 
-/// 基准测试：BatchHandle.cancel_all_no_wait()
-fn bench_batch_handle_cancel_all_no_wait(c: &mut Criterion) {
-    let mut group = c.benchmark_group("batch_handle_cancel_all_no_wait");
-    
-    for size in [10, 100, 1000].iter() {
-        group.bench_with_input(BenchmarkId::from_parameter(size), size, |b, &size| {
-            let runtime = tokio::runtime::Runtime::new().unwrap();
-            
-            b.to_async(&runtime).iter_custom(|iters| async move {
-                let mut total_duration = Duration::from_secs(0);
-                
-                for _ in 0..iters {
-                    // 准备阶段：创建 timer 和调度任务（不计入测量）
-                    let timer = TimerWheel::with_defaults().unwrap();
-                    
-                    let callbacks: Vec<_> = (0..size)
-                        .map(|_| (Duration::from_secs(10), || async {}))
-                        .collect();
-                    let batch = timer.schedule_once_batch(callbacks).await.unwrap();
-                    
-                    // 测量阶段：只测量 batch.cancel_all_no_wait 的性能
-                    let start = std::time::Instant::now();
-                    
-                    batch.cancel_all_no_wait();
-                    
-                    total_duration += start.elapsed();
-                }
-                
-                total_duration
-            });
-        });
-    }
-    
-    group.finish();
-}
 
 /// 基准测试：调度仅通知的定时器
 fn bench_timer_schedule_notify(c: &mut Criterion) {
@@ -442,7 +374,7 @@ fn bench_timer_mixed_operations(c: &mut Criterion) {
                     
                     // 取消前5个任务
                     let to_cancel: Vec<_> = batch.task_ids().iter().take(5).copied().collect();
-                    let cancelled = timer.cancel_batch(&to_cancel).await.unwrap();
+                    let cancelled = timer.cancel_batch(&to_cancel);
                     
                     black_box(cancelled);
                 }
@@ -506,9 +438,7 @@ criterion_group!(
     bench_timer_cancel_single,
     bench_timer_cancel_batch,
     bench_handle_cancel,
-    bench_handle_cancel_no_wait,
     bench_batch_handle_cancel_all,
-    bench_batch_handle_cancel_all_no_wait,
     bench_timer_schedule_notify,
     bench_timer_schedule_notify_batch,
     bench_timer_concurrent_schedule,

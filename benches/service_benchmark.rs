@@ -143,7 +143,7 @@ fn bench_cancel_batch(c: &mut Criterion) {
                     let start = std::time::Instant::now();
                     
                     let cancelled = black_box(
-                        service.cancel_batch(&task_ids).await.unwrap()
+                        service.cancel_batch(&task_ids).await
                     );
                     
                     total_duration += start.elapsed();
@@ -227,7 +227,7 @@ fn bench_high_frequency_cancel(c: &mut Criterion) {
                 let start = std::time::Instant::now();
                 
                 let cancelled = black_box(
-                    service.cancel_batch(&task_ids).await.unwrap()
+                    service.cancel_batch(&task_ids).await
                 );
                 
                 total_duration += start.elapsed();
@@ -269,7 +269,7 @@ fn bench_mixed_operations(c: &mut Criterion) {
                     
                     // 使用批量取消前5个任务
                     let to_cancel: Vec<_> = task_ids.iter().take(5).copied().collect();
-                    let cancelled = service.cancel_batch(&to_cancel).await.unwrap();
+                    let cancelled = service.cancel_batch(&to_cancel).await;
                     
                     black_box(cancelled);
                 }

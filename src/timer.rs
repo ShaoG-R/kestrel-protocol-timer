@@ -1,38 +1,14 @@
 use crate::error::TimerError;
 use crate::task::{CallbackWrapper, CompletionNotifier, TaskId, TimerCallback, TimerTask, TimerWheelId};
 use crate::wheel::Wheel;
-use crossbeam::channel::{Sender, Receiver};
+use parking_lot::Mutex;
+use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 
 /// 完成通知接收器，用于接收定时器完成通知
 pub struct CompletionReceiver(pub oneshot::Receiver<()>);
-
-/// 时间轮操作类型
-pub(crate) enum WheelOperation {
-    /// 插入定时器任务
-    Insert {
-        delay: Duration,
-        task: TimerTask,
-        result_tx: oneshot::Sender<TaskId>,
-    },
-    /// 批量插入定时器任务
-    InsertBatch {
-        tasks: Vec<(Duration, TimerTask)>,
-        result_tx: oneshot::Sender<Vec<TaskId>>,
-    },
-    /// 取消定时器任务
-    Cancel {
-        task_id: TaskId,
-        result_tx: Option<oneshot::Sender<bool>>,
-    },
-    /// 批量取消定时器任务
-    CancelBatch {
-        task_ids: Vec<TaskId>,
-        result_tx: Option<oneshot::Sender<usize>>,
-    },
-}
 
 /// 定时器句柄，用于管理定时器的生命周期
 /// 
@@ -41,19 +17,18 @@ pub(crate) enum WheelOperation {
 pub struct TimerHandle {
     pub(crate) task_id: TaskId,
     pub(crate) timer_wheel_id: TimerWheelId,
-    pub(crate) op_sender: Sender<WheelOperation>,
+    pub(crate) wheel: Arc<Mutex<Wheel>>,
     pub(crate) completion_rx: CompletionReceiver,
 }
 
 impl TimerHandle {
-    pub(crate) fn new(task_id: TaskId, timer_wheel_id: TimerWheelId, op_sender: Sender<WheelOperation>, completion_rx: oneshot::Receiver<()>) -> Self {
-        Self { task_id, timer_wheel_id, op_sender, completion_rx: CompletionReceiver(completion_rx) }
+    pub(crate) fn new(task_id: TaskId, timer_wheel_id: TimerWheelId, wheel: Arc<Mutex<Wheel>>, completion_rx: oneshot::Receiver<()>) -> Self {
+        Self { task_id, timer_wheel_id, wheel, completion_rx: CompletionReceiver(completion_rx) }
     }
 
-    /// 取消定时器（异步获取结果）
+    /// 取消定时器
     ///
     /// # 返回
-    /// oneshot::Receiver<bool>，可通过 await 获取取消结果
     /// 如果任务存在且成功取消返回 true，否则返回 false
     ///
     /// # 示例
@@ -65,43 +40,14 @@ impl TimerHandle {
     /// let timer = TimerWheel::with_defaults().unwrap();
     /// let handle = timer.schedule_once(Duration::from_secs(1), || async {}).await.unwrap();
     /// 
-    /// // 等待取消结果
-    /// let success = handle.cancel().await.unwrap();
+    /// // 取消定时器
+    /// let success = handle.cancel();
     /// println!("取消成功: {}", success);
     /// # }
     /// ```
-    pub fn cancel(&self) -> oneshot::Receiver<bool> {
-        let (tx, rx) = oneshot::channel();
-        let _ = self.op_sender.send(WheelOperation::Cancel {
-            task_id: self.task_id,
-            result_tx: Some(tx),
-        });
-        rx
-    }
-
-    /// 取消定时器（无需等待结果）
-    ///
-    /// 立即发送取消请求并返回，不等待取消结果。
-    /// 适用于不关心取消是否成功的场景，性能更好。
-    ///
-    /// # 示例
-    /// ```no_run
-    /// # use timer::TimerWheel;
-    /// # use std::time::Duration;
-    /// # #[tokio::main]
-    /// # async fn main() {
-    /// let timer = TimerWheel::with_defaults().unwrap();
-    /// let handle = timer.schedule_once(Duration::from_secs(1), || async {}).await.unwrap();
-    /// 
-    /// // 立即发送取消请求，不等待结果
-    /// handle.cancel_no_wait();
-    /// # }
-    /// ```
-    pub fn cancel_no_wait(&self) {
-        let _ = self.op_sender.send(WheelOperation::Cancel {
-            task_id: self.task_id,
-            result_tx: None,
-        });
+    pub fn cancel(&self) -> bool {
+        let mut wheel = self.wheel.lock();
+        wheel.cancel(self.task_id)
     }
 
     /// 获取任务 ID
@@ -161,27 +107,26 @@ impl TimerHandle {
 
 /// 批量定时器句柄，用于管理批量调度的定时器
 /// 
-/// 通过共用单个 Sender 减少内存开销，同时提供批量操作和迭代器访问能力。
+/// 通过共享 Wheel 引用减少内存开销，同时提供批量操作和迭代器访问能力。
 /// 
 /// 注意：此类型不实现 Clone，以防止重复取消同一批定时器。
 /// 如需访问单个定时器句柄，请使用 `into_iter()` 或 `into_handles()` 进行转换。
 pub struct BatchHandle {
     pub(crate) task_ids: Vec<TaskId>,
     pub(crate) timer_wheel_id: TimerWheelId,
-    pub(crate) op_sender: Sender<WheelOperation>,
+    pub(crate) wheel: Arc<Mutex<Wheel>>,
     pub(crate) completion_rxs: Vec<oneshot::Receiver<()>>,
 }
 
 impl BatchHandle {
-    pub(crate) fn new(task_ids: Vec<TaskId>, timer_wheel_id: TimerWheelId, op_sender: Sender<WheelOperation>, completion_rxs: Vec<oneshot::Receiver<()>>) -> Self {
-        Self { task_ids, timer_wheel_id, op_sender, completion_rxs }
+    pub(crate) fn new(task_ids: Vec<TaskId>, timer_wheel_id: TimerWheelId, wheel: Arc<Mutex<Wheel>>, completion_rxs: Vec<oneshot::Receiver<()>>) -> Self {
+        Self { task_ids, timer_wheel_id, wheel, completion_rxs }
     }
 
-    /// 批量取消所有定时器（异步获取结果）
+    /// 批量取消所有定时器
     ///
     /// # 返回
-    /// - `Ok(usize)`: 成功取消的任务数量
-    /// - `Err(TimerError)`: 内部通信通道已关闭
+    /// 成功取消的任务数量
     ///
     /// # 示例
     /// ```no_run
@@ -195,44 +140,13 @@ impl BatchHandle {
     ///     .collect();
     /// let batch = timer.schedule_once_batch(callbacks).await.unwrap();
     /// 
-    /// let cancelled = batch.cancel_all().await.unwrap();
+    /// let cancelled = batch.cancel_all();
     /// println!("取消了 {} 个定时器", cancelled);
     /// # }
     /// ```
-    pub async fn cancel_all(self) -> Result<usize, TimerError> {
-        let (tx, rx) = oneshot::channel();
-        let _ = self.op_sender.send(WheelOperation::CancelBatch {
-            task_ids: self.task_ids,
-            result_tx: Some(tx),
-        });
-        rx.await.map_err(|_| TimerError::ChannelClosed)
-    }
-
-    /// 批量取消所有定时器（无需等待结果）
-    ///
-    /// 立即发送批量取消请求并返回，不等待取消结果。
-    /// 适用于不关心取消是否成功的场景，性能更好。
-    ///
-    /// # 示例
-    /// ```no_run
-    /// # use timer::TimerWheel;
-    /// # use std::time::Duration;
-    /// # #[tokio::main]
-    /// # async fn main() {
-    /// let timer = TimerWheel::with_defaults().unwrap();
-    /// let callbacks: Vec<_> = (0..10)
-    ///     .map(|_| (Duration::from_secs(1), || async {}))
-    ///     .collect();
-    /// let batch = timer.schedule_once_batch(callbacks).await.unwrap();
-    /// 
-    /// batch.cancel_all_no_wait();
-    /// # }
-    /// ```
-    pub fn cancel_all_no_wait(self) {
-        let _ = self.op_sender.send(WheelOperation::CancelBatch {
-            task_ids: self.task_ids,
-            result_tx: None,
-        });
+    pub fn cancel_all(self) -> usize {
+        let mut wheel = self.wheel.lock();
+        wheel.cancel_batch(&self.task_ids)
     }
 
     /// 将批量句柄转换为单个定时器句柄的 Vec
@@ -260,11 +174,12 @@ impl BatchHandle {
     /// ```
     pub fn into_handles(self) -> Vec<TimerHandle> {
         let timer_wheel_id = self.timer_wheel_id;
+        let wheel = self.wheel;
         self.task_ids
             .into_iter()
             .zip(self.completion_rxs.into_iter())
             .map(|(task_id, rx)| {
-                TimerHandle::new(task_id, timer_wheel_id, self.op_sender.clone(), rx)
+                TimerHandle::new(task_id, timer_wheel_id, wheel.clone(), rx)
             })
             .collect()
     }
@@ -359,7 +274,7 @@ impl IntoIterator for BatchHandle {
             task_ids: self.task_ids.into_iter(),
             completion_rxs: self.completion_rxs.into_iter(),
             timer_wheel_id: self.timer_wheel_id,
-            op_sender: self.op_sender,
+            wheel: self.wheel,
         }
     }
 }
@@ -369,7 +284,7 @@ pub struct BatchHandleIter {
     task_ids: std::vec::IntoIter<TaskId>,
     completion_rxs: std::vec::IntoIter<oneshot::Receiver<()>>,
     timer_wheel_id: TimerWheelId,
-    op_sender: Sender<WheelOperation>,
+    wheel: Arc<Mutex<Wheel>>,
 }
 
 impl Iterator for BatchHandleIter {
@@ -378,7 +293,7 @@ impl Iterator for BatchHandleIter {
     fn next(&mut self) -> Option<Self::Item> {
         match (self.task_ids.next(), self.completion_rxs.next()) {
             (Some(task_id), Some(rx)) => {
-                Some(TimerHandle::new(task_id, self.timer_wheel_id, self.op_sender.clone(), rx))
+                Some(TimerHandle::new(task_id, self.timer_wheel_id, self.wheel.clone(), rx))
             }
             _ => None,
         }
@@ -400,8 +315,8 @@ pub struct TimerWheel {
     /// 时间轮唯一标识符
     wheel_id: TimerWheelId,
     
-    /// 操作队列发送端
-    op_sender: Sender<WheelOperation>,
+    /// 时间轮实例（使用 Arc<Mutex> 包装以支持多线程访问）
+    wheel: Arc<Mutex<Wheel>>,
     
     /// 后台 tick 循环任务句柄
     tick_handle: Option<JoinHandle<()>>,
@@ -430,16 +345,17 @@ impl TimerWheel {
     /// ```
     pub fn new(tick_duration: Duration, slot_count: usize) -> Result<Self, TimerError> {
         let wheel = Wheel::new(tick_duration, slot_count)?;
-        let (op_sender, op_receiver) = crossbeam::channel::unbounded();
+        let wheel = Arc::new(Mutex::new(wheel));
+        let wheel_clone = wheel.clone();
 
         // 启动后台 tick 循环
         let tick_handle = tokio::spawn(async move {
-            Self::tick_loop(wheel, op_receiver, tick_duration).await;
+            Self::tick_loop(wheel_clone, tick_duration).await;
         });
 
         Ok(Self {
             wheel_id: TimerWheelId::new(),
-            op_sender,
+            wheel,
             tick_handle: Some(tick_handle),
         })
     }
@@ -478,54 +394,50 @@ impl TimerWheel {
     ///     service.add_batch_handle(batch).await.unwrap();
     ///     
     ///     // 接收超时通知
-    ///     let mut rx = service.timeout_receiver();
+    ///     let mut rx = service.take_receiver().unwrap();
     ///     while let Some(task_id) = rx.recv().await {
     ///         println!("Task {:?} completed", task_id);
     ///     }
     /// }
     /// ```
     pub fn create_service(&self) -> crate::service::TimerService {
-        crate::service::TimerService::new(self.wheel_id, self.op_sender.clone())
+        crate::service::TimerService::new(self.wheel_id, self.wheel.clone())
     }
 
     /// 内部辅助方法：创建定时器句柄
     /// 
     /// 由 TimerWheel 和 TimerService 共用
-    pub(crate) async fn create_timer_handle_internal(
+    pub(crate) fn create_timer_handle_internal(
         wheel_id: TimerWheelId,
-        op_sender: &Sender<WheelOperation>,
+        wheel: &Arc<Mutex<Wheel>>,
         delay: Duration,
         callback: Option<CallbackWrapper>,
     ) -> Result<TimerHandle, TimerError> {
-        let (tx, rx) = oneshot::channel();
         let (completion_tx, completion_rx) = oneshot::channel();
         let notifier = CompletionNotifier(completion_tx);
         
         let task = TimerTask::once(0, 0, callback, notifier);
         
-        op_sender.send(WheelOperation::Insert {
-            delay,
-            task,
-            result_tx: tx,
-        }).map_err(|_| TimerError::ChannelClosed)?;
+        let task_id = {
+            let mut wheel_guard = wheel.lock();
+            wheel_guard.insert(delay, task)
+        };
         
-        let task_id = rx.await.map_err(|_| TimerError::ChannelClosed)?;
-        Ok(TimerHandle::new(task_id, wheel_id, op_sender.clone(), completion_rx))
+        Ok(TimerHandle::new(task_id, wheel_id, wheel.clone(), completion_rx))
     }
 
     /// 内部辅助方法：创建批量定时器句柄
     /// 
     /// 由 TimerWheel 和 TimerService 共用
-    pub(crate) async fn create_batch_handle_internal<C>(
+    pub(crate) fn create_batch_handle_internal<C>(
         wheel_id: TimerWheelId,
-        op_sender: &Sender<WheelOperation>,
+        wheel: &Arc<Mutex<Wheel>>,
         callbacks: Vec<(Duration, C)>,
     ) -> Result<BatchHandle, TimerError>
     where
         C: TimerCallback,
     {
         use std::sync::Arc;
-        let (tx, rx) = oneshot::channel();
         let mut completion_rxs = Vec::with_capacity(callbacks.len());
         
         let tasks: Vec<(Duration, TimerTask)> = callbacks
@@ -540,13 +452,12 @@ impl TimerWheel {
             })
             .collect();
         
-        op_sender.send(WheelOperation::InsertBatch {
-            tasks,
-            result_tx: tx,
-        }).map_err(|_| TimerError::ChannelClosed)?;
+        let task_ids = {
+            let mut wheel_guard = wheel.lock();
+            wheel_guard.insert_batch(tasks)
+        };
         
-        let task_ids = rx.await.map_err(|_| TimerError::ChannelClosed)?;
-        Ok(BatchHandle::new(task_ids, wheel_id, op_sender.clone(), completion_rxs))
+        Ok(BatchHandle::new(task_ids, wheel_id, wheel.clone(), completion_rxs))
     }
 
     /// 调度一次性定时器
@@ -557,7 +468,7 @@ impl TimerWheel {
     ///
     /// # 返回
     /// - `Ok(TimerHandle)`: 成功调度，返回定时器句柄，可用于取消定时器
-    /// - `Err(TimerError)`: 内部通信通道已关闭
+    /// - `Err(TimerError)`: 内部错误
     ///
     /// # 示例
     /// ```no_run
@@ -582,7 +493,7 @@ impl TimerWheel {
     {
         use std::sync::Arc;
         let callback_wrapper = Arc::new(callback) as CallbackWrapper;
-        Self::create_timer_handle_internal(self.wheel_id, &self.op_sender, delay, Some(callback_wrapper)).await
+        Self::create_timer_handle_internal(self.wheel_id, &self.wheel, delay, Some(callback_wrapper))
     }
 
     /// 批量调度一次性定时器
@@ -592,12 +503,12 @@ impl TimerWheel {
     ///
     /// # 返回
     /// - `Ok(BatchHandle)`: 成功调度，返回批量定时器句柄
-    /// - `Err(TimerError)`: 内部通信通道已关闭
+    /// - `Err(TimerError)`: 内部错误
     ///
     /// # 性能优势
-    /// - 批量处理减少通道通信开销
+    /// - 批量处理减少锁竞争
     /// - 内部优化批量插入操作
-    /// - 共用单个 Sender 减少内存开销
+    /// - 共享 Wheel 引用减少内存开销
     ///
     /// # 示例
     /// ```no_run
@@ -630,20 +541,15 @@ impl TimerWheel {
     ///     println!("Scheduled {} timers", batch.len());
     ///     
     ///     // 批量取消所有定时器
-    ///     let cancelled = batch.cancel_all().await.unwrap();
+    ///     let cancelled = batch.cancel_all();
     ///     println!("Cancelled {} timers", cancelled);
-    ///     
-    ///     // 或者获取单个句柄
-    ///     // if let Some(handle) = batch.get_handle(0) {
-    ///     //     handle.cancel().await.unwrap();
-    ///     // }
     /// }
     /// ```
     pub async fn schedule_once_batch<C>(&self, callbacks: Vec<(Duration, C)>) -> Result<BatchHandle, TimerError>
     where
         C: TimerCallback,
     {
-        Self::create_batch_handle_internal(self.wheel_id, &self.op_sender, callbacks).await
+        Self::create_batch_handle_internal(self.wheel_id, &self.wheel, callbacks)
     }
 
 
@@ -654,7 +560,7 @@ impl TimerWheel {
     ///
     /// # 返回
     /// - `Ok(TimerHandle)`: 成功调度，返回定时器句柄，可通过 `into_completion_receiver()` 获取通知接收器
-    /// - `Err(TimerError)`: 内部通信通道已关闭
+    /// - `Err(TimerError)`: 内部错误
     ///
     /// # 示例
     /// ```no_run
@@ -673,51 +579,31 @@ impl TimerWheel {
     /// }
     /// ```
     pub async fn schedule_once_notify(&self, delay: Duration) -> Result<TimerHandle, TimerError> {
-        Self::create_timer_handle_internal(self.wheel_id, &self.op_sender, delay, None).await
+        Self::create_timer_handle_internal(self.wheel_id, &self.wheel, delay, None)
     }
 
-    /// 取消定时器（异步获取结果）
+    /// 取消定时器
     ///
     /// # 参数
     /// - `task_id`: 任务 ID
     ///
     /// # 返回
-    /// oneshot::Receiver<bool>，可通过 await 获取取消结果
     /// 如果任务存在且成功取消返回 true，否则返回 false
-    pub fn cancel(&self, task_id: TaskId) -> oneshot::Receiver<bool> {
-        let (tx, rx) = oneshot::channel();
-        let _ = self.op_sender.send(WheelOperation::Cancel {
-            task_id,
-            result_tx: Some(tx),
-        });
-        rx
+    pub fn cancel(&self, task_id: TaskId) -> bool {
+        let mut wheel = self.wheel.lock();
+        wheel.cancel(task_id)
     }
 
-    /// 取消定时器（无需等待结果）
-    ///
-    /// # 参数
-    /// - `task_id`: 任务 ID
-    ///
-    /// 立即发送取消请求并返回，不等待取消结果。
-    /// 适用于不关心取消是否成功的场景，性能更好。
-    pub fn cancel_no_wait(&self, task_id: TaskId) {
-        let _ = self.op_sender.send(WheelOperation::Cancel {
-            task_id,
-            result_tx: None,
-        });
-    }
-
-    /// 批量取消定时器（异步获取结果）
+    /// 批量取消定时器
     ///
     /// # 参数
     /// - `task_ids`: 要取消的任务 ID 列表
     ///
     /// # 返回
-    /// - `Ok(usize)`: 成功取消的任务数量
-    /// - `Err(TimerError)`: 内部通信通道已关闭
+    /// 成功取消的任务数量
     ///
     /// # 性能优势
-    /// - 批量处理减少通道通信开销
+    /// - 批量处理减少锁竞争
     /// - 内部优化批量取消操作
     ///
     /// # 示例
@@ -736,106 +622,30 @@ impl TimerWheel {
     ///     
     ///     // 批量取消
     ///     let task_ids = vec![handle1.task_id(), handle2.task_id(), handle3.task_id()];
-    ///     let cancelled = timer.cancel_batch(&task_ids).await.unwrap();
+    ///     let cancelled = timer.cancel_batch(&task_ids);
     ///     println!("已取消 {} 个定时器", cancelled);
     /// }
     /// ```
-    pub async fn cancel_batch(&self, task_ids: &[TaskId]) -> Result<usize, TimerError> {
-        let (tx, rx) = oneshot::channel();
-        let _ = self.op_sender.send(WheelOperation::CancelBatch {
-            task_ids: task_ids.to_vec(),
-            result_tx: Some(tx),
-        });
-        rx.await.map_err(|_| TimerError::ChannelClosed)
-    }
-
-    /// 批量取消定时器（无需等待结果）
-    ///
-    /// # 参数
-    /// - `task_ids`: 要取消的任务 ID 列表
-    ///
-    /// 立即发送批量取消请求并返回，不等待取消结果。
-    /// 适用于不关心取消是否成功的场景，性能更好。
-    ///
-    /// # 示例
-    /// ```no_run
-    /// use timer::TimerWheel;
-    /// use std::time::Duration;
-    ///
-    /// #[tokio::main]
-    /// async fn main() {
-    ///     let timer = TimerWheel::with_defaults().unwrap();
-    ///     
-    ///     let handle1 = timer.schedule_once(Duration::from_secs(10), || async {}).await.unwrap();
-    ///     let handle2 = timer.schedule_once(Duration::from_secs(10), || async {}).await.unwrap();
-    ///     
-    ///     // 立即批量取消，不等待结果
-    ///     let task_ids = vec![handle1.task_id(), handle2.task_id()];
-    ///     timer.cancel_batch_no_wait(&task_ids);
-    /// }
-    /// ```
-    pub fn cancel_batch_no_wait(&self, task_ids: &[TaskId]) {
-        let _ = self.op_sender.send(WheelOperation::CancelBatch {
-            task_ids: task_ids.to_vec(),
-            result_tx: None,
-        });
+    pub fn cancel_batch(&self, task_ids: &[TaskId]) -> usize {
+        let mut wheel = self.wheel.lock();
+        wheel.cancel_batch(task_ids)
     }
     
     /// 核心 tick 循环
-    async fn tick_loop(mut wheel: Wheel, op_receiver: Receiver<WheelOperation>, tick_duration: Duration) {
+    async fn tick_loop(wheel: Arc<Mutex<Wheel>>, tick_duration: Duration) {
         let mut interval = tokio::time::interval(tick_duration);
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-
-        // 批量操作缓冲区，减少通道读取次数
-        const BATCH_SIZE: usize = 32;
-        let mut op_batch = Vec::with_capacity(BATCH_SIZE);
 
         loop {
             interval.tick().await;
 
-            // 1. 批量处理队列中的所有操作
-            op_batch.clear();
-            
-            // 尽可能多地收集操作，但不超过 BATCH_SIZE
-            while op_batch.len() < BATCH_SIZE {
-                match op_receiver.try_recv() {
-                    Ok(op) => op_batch.push(op),
-                    Err(_) => break,
-                }
-            }
-            
-            // 批量处理所有收集到的操作
-            for op in op_batch.drain(..) {
-                match op {
-                    WheelOperation::Insert { delay, task, result_tx } => {
-                        let task_id = wheel.insert(delay, task);
-                        let _ = result_tx.send(task_id);
-                    }
-                    WheelOperation::InsertBatch { tasks, result_tx } => {
-                        let task_ids = wheel.insert_batch(tasks);
-                        let _ = result_tx.send(task_ids);
-                    }
-                    WheelOperation::Cancel { task_id, result_tx } => {
-                        let success = wheel.cancel(task_id);
-                        // 只在需要返回结果时才发送
-                        if let Some(tx) = result_tx {
-                            let _ = tx.send(success);
-                        }
-                    }
-                    WheelOperation::CancelBatch { task_ids, result_tx } => {
-                        let cancelled_count = wheel.cancel_batch(&task_ids);
-                        // 只在需要返回结果时才发送
-                        if let Some(tx) = result_tx {
-                            let _ = tx.send(cancelled_count);
-                        }
-                    }
-                }
-            }
+            // 推进时间轮并获取到期任务
+            let expired_tasks = {
+                let mut wheel_guard = wheel.lock();
+                wheel_guard.advance()
+            };
 
-            // 2. 推进时间轮并获取到期任务
-            let expired_tasks = wheel.advance();
-
-            // 3. 执行到期任务
+            // 执行到期任务
             for task in expired_tasks {
                 let callback = task.get_callback();
                 
@@ -922,8 +732,8 @@ mod tests {
             },
         ).await.unwrap();
 
-        // 立即取消（等待结果）
-        let cancel_result = handle.cancel().await.unwrap();
+        // 立即取消
+        let cancel_result = handle.cancel();
         assert!(cancel_result);
 
         // 等待足够长时间确保定时器不会触发
@@ -932,7 +742,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_cancel_no_wait() {
+    async fn test_cancel_immediate() {
         use std::sync::Arc;
         let timer = TimerWheel::with_defaults().unwrap();
         let counter = Arc::new(AtomicU32::new(0));
@@ -948,8 +758,9 @@ mod tests {
             },
         ).await.unwrap();
 
-        // 立即取消（无需等待结果）
-        handle.cancel_no_wait();
+        // 立即取消
+        let cancel_result = handle.cancel();
+        assert!(cancel_result);
 
         // 等待足够长时间确保定时器不会触发
         tokio::time::sleep(Duration::from_millis(200)).await;

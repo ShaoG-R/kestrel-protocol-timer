@@ -135,7 +135,7 @@ mod tests {
 
         // 取消前 3 个定时器
         for i in 0..3 {
-            let cancel_result = handles[i].cancel().await.unwrap();
+            let cancel_result = handles[i].cancel();
             assert!(cancel_result);
         }
 

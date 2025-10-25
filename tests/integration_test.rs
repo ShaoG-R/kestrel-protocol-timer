@@ -178,14 +178,9 @@ async fn test_memory_efficiency() {
 
     // Note: task_count() is deprecated in lockfree version
 
-    // 并发取消所有定时器
-    let cancel_futures: Vec<_> = handles.into_iter()
+    // 取消所有定时器（现在是同步操作）
+    let cancelled_count = handles.into_iter()
         .map(|handle| handle.cancel())
-        .collect();
-    
-    let results = future::join_all(cancel_futures).await;
-    let cancelled_count = results.into_iter()
-        .filter_map(|r| r.ok())
         .filter(|&success| success)
         .count();
 
@@ -251,7 +246,7 @@ async fn test_batch_cancel() {
     
     // 批量取消（使用 BatchHandle 的 cancel_all 方法）
     let start = Instant::now();
-    let cancelled = batch.cancel_all().await.unwrap();
+    let cancelled = batch.cancel_all();
     let elapsed = start.elapsed();
     
     println!("批量取消 {} 个定时器耗时: {:?}", TIMER_COUNT, elapsed);
@@ -279,7 +274,7 @@ async fn test_batch_cancel_partial() {
     // 取消前 5 个
     let mut cancelled_count = 0;
     for handle in handles {
-        if handle.cancel().await.unwrap() {
+        if handle.cancel() {
             cancelled_count += 1;
         }
     }
@@ -291,7 +286,7 @@ async fn test_batch_cancel_partial() {
     // 尝试取消已经触发的定时器
     let mut cancelled_after = 0;
     for handle in remaining_handles {
-        if handle.cancel().await.unwrap() {
+        if handle.cancel() {
             cancelled_after += 1;
         }
     }
@@ -310,9 +305,9 @@ async fn test_batch_cancel_no_wait() {
     
     let batch = timer.schedule_once_batch(callbacks).await.unwrap();
     
-    // 批量取消（不等待结果，使用 BatchHandle 的 cancel_all_no_wait 方法）
+    // 批量取消（使用 BatchHandle 的 cancel_all 方法，现在是同步的）
     let start = Instant::now();
-    batch.cancel_all_no_wait();
+    let _ = batch.cancel_all();
     let elapsed = start.elapsed();
     
     println!("批量取消（无等待）耗时: {:?}", elapsed);
