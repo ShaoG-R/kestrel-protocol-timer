@@ -17,3 +17,11 @@ criterion = { version = "0.7.0", features = ["async_tokio"] }
 [[bench]]
 name = "service_benchmark"
 harness = false
+
+[[bench]]
+name = "timer_benchmark"
+harness = false
+
+[[bench]]
+name = "wheel_benchmark"
+harness = false
