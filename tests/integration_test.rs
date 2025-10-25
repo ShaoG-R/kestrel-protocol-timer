@@ -58,7 +58,7 @@ async fn test_timer_precision() {
     *start_time.lock() = Some(Instant::now());
 
     let end_clone = Arc::clone(&end_time);
-    timer.schedule_once(
+    let handle = timer.schedule_once(
         Duration::from_millis(100),
         move || {
             let end_time = Arc::clone(&end_clone);
@@ -68,10 +68,15 @@ async fn test_timer_precision() {
         },
     ).await.unwrap();
 
-    tokio::time::sleep(Duration::from_millis(150)).await;
+    // 使用 completion_receiver 等待定时器完成，而不是固定的sleep时间
+    // 这样可以避免竞态条件
+    let _ = handle.into_completion_receiver().0.await;
+    
+    // 额外等待一点时间确保回调完全执行完毕
+    tokio::time::sleep(Duration::from_millis(20)).await;
 
-    let start = start_time.lock().unwrap();
-    let end = end_time.lock().unwrap();
+    let start = start_time.lock().expect("start_time should be set");
+    let end = end_time.lock().expect("end_time should be set after timer completion");
     let elapsed = end.duration_since(start);
 
     println!("预期延迟: 100ms, 实际延迟: {:?}", elapsed);
@@ -133,11 +138,12 @@ async fn test_timer_with_different_delays() {
     let results = Arc::new(parking_lot::Mutex::new(Vec::new()));
 
     let delays = vec![10, 20, 30, 50, 100, 150, 200];
+    let mut handles = Vec::new();
     
     for (idx, &delay_ms) in delays.iter().enumerate() {
         let results_clone = Arc::clone(&results);
         
-        timer.schedule_once(
+        let handle = timer.schedule_once(
             Duration::from_millis(delay_ms),
             move || {
                 let results = Arc::clone(&results_clone);
@@ -146,10 +152,18 @@ async fn test_timer_with_different_delays() {
                 }
             },
         ).await.unwrap();
+        
+        handles.push(handle);
     }
 
-    // 等待所有定时器触发（等待时间需要大于最大延迟）
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    // 使用 completion_receiver 等待所有定时器完成，而不是固定的sleep时间
+    // 这样可以确保所有定时器都真正触发了
+    for handle in handles {
+        let _ = handle.into_completion_receiver().0.await;
+    }
+    
+    // 额外等待一点时间确保所有回调完全执行完毕
+    tokio::time::sleep(Duration::from_millis(50)).await;
 
     let final_results = results.lock();
     println!("触发顺序: {:?}", final_results);
@@ -280,8 +294,9 @@ async fn test_batch_cancel_partial() {
     }
     assert_eq!(cancelled_count, 5);
     
-    // 等待剩余的定时器触发
-    tokio::time::sleep(Duration::from_millis(150)).await;
+    // 等待剩余的定时器触发 - 增加等待时间到200ms以确保定时器真正触发
+    // tick_duration是10ms，100ms延迟需要10个tick，加上调度延迟和回调执行时间
+    tokio::time::sleep(Duration::from_millis(200)).await;
     
     // 尝试取消已经触发的定时器
     let mut cancelled_after = 0;
