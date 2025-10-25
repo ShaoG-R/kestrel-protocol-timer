@@ -45,12 +45,11 @@ enum ServiceCommand {
 ///     let timer = TimerWheel::with_defaults().unwrap();
 ///     let mut service = timer.create_service();
 ///     
-///     // 创建批量定时器并添加到 service
+///     // 直接通过 service 批量调度定时器
 ///     let callbacks: Vec<_> = (0..5)
 ///         .map(|_| (Duration::from_millis(100), || async {}))
 ///         .collect();
-///     let batch = timer.schedule_once_batch(callbacks).await.unwrap();
-///     service.add_batch_handle(batch).await.unwrap();
+///     service.schedule_once_batch(callbacks).await.unwrap();
 ///     
 ///     // 接收超时通知
 ///     let mut rx = service.take_receiver().unwrap();
@@ -107,32 +106,7 @@ impl TimerService {
         }
     }
 
-    /// 添加批量定时器句柄
-    ///
-    /// # 参数
-    /// - `batch`: 批量定时器句柄
-    ///
-    /// # 返回
-    /// - `Ok(())`: 成功添加
-    /// - `Err(TimerError)`: 添加失败
-    ///
-    /// # 示例
-    /// ```no_run
-    /// # use timer::{TimerWheel, TimerService};
-    /// # use std::time::Duration;
-    /// # #[tokio::main]
-    /// # async fn main() {
-    /// let timer = TimerWheel::with_defaults().unwrap();
-    /// let mut service = timer.create_service();
-    /// 
-    /// let callbacks: Vec<_> = (0..5)
-    ///     .map(|_| (Duration::from_millis(100), || async {}))
-    ///     .collect();
-    /// let batch = timer.schedule_once_batch(callbacks).await.unwrap();
-    /// 
-    /// service.add_batch_handle(batch).await.unwrap();
-    /// # }
-    /// ```
+    /// 添加批量定时器句柄（内部方法）
     async fn add_batch_handle(&self, batch: BatchHandle) -> Result<(), TimerError> {
         self.command_tx
             .send(ServiceCommand::AddBatchHandle(batch))
@@ -140,29 +114,7 @@ impl TimerService {
             .map_err(|_| TimerError::ChannelClosed)
     }
 
-    /// 添加单个定时器句柄
-    ///
-    /// # 参数
-    /// - `handle`: 定时器句柄
-    ///
-    /// # 返回
-    /// - `Ok(())`: 成功添加
-    /// - `Err(TimerError)`: 添加失败
-    ///
-    /// # 示例
-    /// ```no_run
-    /// # use timer::{TimerWheel, TimerService};
-    /// # use std::time::Duration;
-    /// # #[tokio::main]
-    /// # async fn main() {
-    /// let timer = TimerWheel::with_defaults().unwrap();
-    /// let mut service = timer.create_service();
-    /// 
-    /// let handle = timer.schedule_once(Duration::from_millis(100), || async {}).await.unwrap();
-    /// 
-    /// service.add_timer_handle(handle).await.unwrap();
-    /// # }
-    /// ```
+    /// 添加单个定时器句柄（内部方法）
     async fn add_timer_handle(&self, handle: TimerHandle) -> Result<(), TimerError> {
         self.command_tx
             .send(ServiceCommand::AddTimerHandle(handle))
@@ -217,12 +169,10 @@ impl TimerService {
     /// # #[tokio::main]
     /// # async fn main() {
     /// let timer = TimerWheel::with_defaults().unwrap();
-    /// let mut service = timer.create_service();
+    /// let service = timer.create_service();
     /// 
-    /// let handle = timer.schedule_once(Duration::from_secs(10), || async {}).await.unwrap();
-    /// let task_id = handle.task_id();
-    /// 
-    /// service.add_timer_handle(handle).await.unwrap();
+    /// // 直接通过 service 调度定时器
+    /// let task_id = service.schedule_once(Duration::from_secs(10), || async {}).await.unwrap();
     /// 
     /// // 取消任务
     /// let cancelled = service.cancel_task(task_id).await.unwrap();
@@ -270,12 +220,10 @@ impl TimerService {
     /// # #[tokio::main]
     /// # async fn main() {
     /// let timer = TimerWheel::with_defaults().unwrap();
-    /// let mut service = timer.create_service();
+    /// let service = timer.create_service();
     /// 
-    /// let handle = timer.schedule_once(Duration::from_secs(10), || async {}).await.unwrap();
-    /// let task_id = handle.task_id();
-    /// 
-    /// service.add_timer_handle(handle).await.unwrap();
+    /// // 直接通过 service 调度定时器
+    /// let task_id = service.schedule_once(Duration::from_secs(10), || async {}).await.unwrap();
     /// 
     /// // 发送取消请求，不等待结果
     /// service.cancel_task_no_wait(task_id).await.unwrap();
