@@ -8,7 +8,7 @@ use parking_lot::Mutex;
 use rustc_hash::FxHashSet;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
 /// TimerService 命令类型
@@ -17,12 +17,7 @@ enum ServiceCommand {
     AddBatchHandle(BatchHandle),
     /// 添加单个定时器句柄
     AddTimerHandle(TimerHandle),
-    /// 取消单个任务
-    CancelTask {
-        task_id: TaskId,
-        result_tx: Option<oneshot::Sender<bool>>,
-    },
-    /// 批量从活跃任务集合中移除任务（优化批量取消性能）
+    /// 批量从活跃任务集合中移除任务（用于直接取消后的清理）
     RemoveTasks {
         task_ids: Vec<TaskId>,
     },
@@ -98,10 +93,11 @@ impl TimerService {
     /// }
     /// ```
     pub(crate) fn new(timer_wheel_id: TimerWheelId, wheel: Arc<Mutex<Wheel>>) -> Self {
-        let (command_tx, command_rx) = mpsc::channel(100);
+        // 优化：增加命令通道容量以减少背压，提升添加操作的吞吐量
+        let (command_tx, command_rx) = mpsc::channel(512);
         let (timeout_tx, timeout_rx) = mpsc::channel(1000);
 
-        let actor = ServiceActor::new(command_rx, timeout_tx, wheel.clone());
+        let actor = ServiceActor::new(command_rx, timeout_tx);
         let actor_handle = tokio::spawn(async move {
             actor.run().await;
         });
@@ -233,6 +229,9 @@ impl TimerService {
     /// - `Ok(false)`: 任务不存在或取消失败
     /// - `Err(String)`: 发送命令失败
     ///
+    /// # 性能说明
+    /// 此方法使用直接取消优化，不需要等待 Actor 处理，大幅降低延迟
+    ///
     /// # 示例
     /// ```no_run
     /// # use timer::{TimerWheel, TimerService};
@@ -253,26 +252,38 @@ impl TimerService {
     /// # }
     /// ```
     pub async fn cancel_task(&self, task_id: TaskId) -> Result<bool, String> {
-        let (tx, rx) = oneshot::channel();
-        self.command_tx
-            .send(ServiceCommand::CancelTask { task_id, result_tx: Some(tx) })
-            .await
-            .map_err(|e| format!("Failed to send CancelTask command: {}", e))?;
+        // 优化：直接取消任务，避免通过 Actor 的异步往返
+        // 这将延迟从 "2次异步通信" 减少到 "0次等待"
+        let success = {
+            let mut wheel = self.wheel.lock();
+            wheel.cancel(task_id)
+        };
         
-        rx.await.map_err(|e| format!("Failed to receive cancel result: {}", e))
+        // 异步通知 Actor 清理 active_tasks（无需等待结果）
+        if success {
+            let _ = self.command_tx
+                .send(ServiceCommand::RemoveTasks { 
+                    task_ids: vec![task_id] 
+                })
+                .await;
+        }
+        
+        Ok(success)
     }
 
     /// 取消指定的任务（无需等待结果）
     ///
-    /// 立即发送取消请求并返回，不等待取消结果。
-    /// Actor 会在后台监听取消是否成功，并在成功时从活跃任务列表中移除。
+    /// 立即取消任务并返回，性能最优。
     ///
     /// # 参数
     /// - `task_id`: 要取消的任务 ID
     ///
     /// # 返回
-    /// - `Ok(())`: 成功发送取消请求
+    /// - `Ok(())`: 成功（无论任务是否存在）
     /// - `Err(TimerError)`: 发送命令失败
+    ///
+    /// # 性能说明
+    /// 此方法是最快的取消方式，直接操作 Wheel 并异步通知 Actor 清理
     ///
     /// # 示例
     /// ```no_run
@@ -293,13 +304,22 @@ impl TimerService {
     /// # }
     /// ```
     pub async fn cancel_task_no_wait(&self, task_id: TaskId) -> Result<(), TimerError> {
-        self.command_tx
-            .send(ServiceCommand::CancelTask { 
-                task_id, 
-                result_tx: None 
-            })
-            .await
-            .map_err(|_| TimerError::ChannelClosed)
+        // 优化：直接取消任务
+        let success = {
+            let mut wheel = self.wheel.lock();
+            wheel.cancel(task_id)
+        };
+        
+        // 异步通知 Actor 清理（忽略失败）
+        if success {
+            let _ = self.command_tx
+                .send(ServiceCommand::RemoveTasks { 
+                    task_ids: vec![task_id] 
+                })
+                .await;
+        }
+        
+        Ok(())
     }
 
     /// 批量取消任务
@@ -542,18 +562,15 @@ struct ServiceActor {
     command_rx: mpsc::Receiver<ServiceCommand>,
     /// 超时发送端
     timeout_tx: mpsc::Sender<TaskId>,
-    /// 时间轮引用（用于取消操作等）
-    wheel: Arc<Mutex<Wheel>>,
     /// 活跃任务ID集合（使用 FxHashSet 提升性能）
     active_tasks: FxHashSet<TaskId>,
 }
 
 impl ServiceActor {
-    fn new(command_rx: mpsc::Receiver<ServiceCommand>, timeout_tx: mpsc::Sender<TaskId>, wheel: Arc<Mutex<Wheel>>) -> Self {
+    fn new(command_rx: mpsc::Receiver<ServiceCommand>, timeout_tx: mpsc::Sender<TaskId>) -> Self {
         Self {
             command_rx,
             timeout_tx,
-            wheel,
             active_tasks: FxHashSet::default(),
         }
     }
@@ -611,33 +628,9 @@ impl ServiceActor {
                             });
                             futures.push(future);
                         }
-                        ServiceCommand::CancelTask { task_id, result_tx } => {
-                            // 检查任务是否存在于活跃任务集合中
-                            if self.active_tasks.contains(&task_id) {
-                                // 直接取消任务
-                                let success = {
-                                    let mut wheel = self.wheel.lock();
-                                    wheel.cancel(task_id)
-                                };
-                                
-                                if success {
-                                    // 取消成功，从活跃任务中移除
-                                    self.active_tasks.remove(&task_id);
-                                }
-                                
-                                // 发送结果给调用者
-                                if let Some(result_tx) = result_tx {
-                                    let _ = result_tx.send(success);
-                                }
-                            } else {
-                                // 任务不存在
-                                if let Some(result_tx) = result_tx {
-                                    let _ = result_tx.send(false);
-                                }
-                            }
-                        }
                         ServiceCommand::RemoveTasks { task_ids } => {
                             // 批量从活跃任务集合中移除任务
+                            // 用于直接取消后的清理工作
                             for task_id in task_ids {
                                 self.active_tasks.remove(&task_id);
                             }
