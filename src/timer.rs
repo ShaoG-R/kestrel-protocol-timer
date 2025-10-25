@@ -652,16 +652,20 @@ impl TimerWheel {
                 // 移动task的所有权来获取completion_notifier
                 let notifier = task.completion_notifier;
                 
-                // 在独立的 tokio 任务中执行回调
+                // 在独立的 tokio 任务中执行回调，并在回调完成后发送通知
                 if let Some(callback) = callback {
                     tokio::spawn(async move {
+                        // 执行回调
                         let future = callback.call();
                         future.await;
+                        
+                        // 回调执行完成后发送通知
+                        let _ = notifier.0.send(());
                     });
+                } else {
+                    // 如果没有回调，立即发送完成通知
+                    let _ = notifier.0.send(());
                 }
-                
-                // 发送完成通知（在回调执行后立即发送，不等待回调完成）
-                let _ = notifier.0.send(());
             }
         }
     }
