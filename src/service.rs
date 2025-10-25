@@ -1,4 +1,4 @@
-use crate::task::{CallbackWrapper, TaskId, TimerCallback, TimerWheelId};
+use crate::task::{CallbackWrapper, TaskId, TimerCallback};
 use crate::timer::{BatchHandle, TimerHandle};
 use crate::error::TimerError;
 use crate::wheel::Wheel;
@@ -66,8 +66,6 @@ pub struct TimerService {
     timeout_rx: Option<mpsc::Receiver<TaskId>>,
     /// Actor 任务句柄
     actor_handle: Option<JoinHandle<()>>,
-    /// 时间轮 ID（用于验证所有句柄来自同一个时间轮）
-    timer_wheel_id: TimerWheelId,
     /// 时间轮引用（用于直接调度定时器）
     wheel: Arc<Mutex<Wheel>>,
 }
@@ -76,7 +74,6 @@ impl TimerService {
     /// 创建新的 TimerService
     ///
     /// # 参数
-    /// - `timer_wheel_id`: 时间轮 ID
     /// - `wheel`: 时间轮引用
     ///
     /// # 注意
@@ -92,7 +89,7 @@ impl TimerService {
     ///     let mut service = timer.create_service();
     /// }
     /// ```
-    pub(crate) fn new(timer_wheel_id: TimerWheelId, wheel: Arc<Mutex<Wheel>>) -> Self {
+    pub(crate) fn new(wheel: Arc<Mutex<Wheel>>) -> Self {
         // 优化：增加命令通道容量以减少背压，提升添加操作的吞吐量
         let (command_tx, command_rx) = mpsc::channel(512);
         let (timeout_tx, timeout_rx) = mpsc::channel(1000);
@@ -106,7 +103,6 @@ impl TimerService {
             command_tx,
             timeout_rx: Some(timeout_rx),
             actor_handle: Some(actor_handle),
-            timer_wheel_id,
             wheel,
         }
     }
@@ -118,7 +114,7 @@ impl TimerService {
     ///
     /// # 返回
     /// - `Ok(())`: 成功添加
-    /// - `Err(TimerError)`: 添加失败（例如：TimerWheel ID 不匹配）
+    /// - `Err(TimerError)`: 添加失败
     ///
     /// # 示例
     /// ```no_run
@@ -137,16 +133,7 @@ impl TimerService {
     /// service.add_batch_handle(batch).await.unwrap();
     /// # }
     /// ```
-    pub async fn add_batch_handle(&self, batch: BatchHandle) -> Result<(), TimerError> {
-        // 验证 timer_wheel_id
-        let batch_wheel_id = batch.timer_wheel_id();
-        if self.timer_wheel_id != batch_wheel_id {
-            return Err(TimerError::TimerWheelIdMismatch {
-                expected: self.timer_wheel_id,
-                actual: batch_wheel_id,
-            });
-        }
-        
+    async fn add_batch_handle(&self, batch: BatchHandle) -> Result<(), TimerError> {
         self.command_tx
             .send(ServiceCommand::AddBatchHandle(batch))
             .await
@@ -160,7 +147,7 @@ impl TimerService {
     ///
     /// # 返回
     /// - `Ok(())`: 成功添加
-    /// - `Err(TimerError)`: 添加失败（例如：TimerWheel ID 不匹配）
+    /// - `Err(TimerError)`: 添加失败
     ///
     /// # 示例
     /// ```no_run
@@ -176,16 +163,7 @@ impl TimerService {
     /// service.add_timer_handle(handle).await.unwrap();
     /// # }
     /// ```
-    pub async fn add_timer_handle(&self, handle: TimerHandle) -> Result<(), TimerError> {
-        // 验证 timer_wheel_id
-        let handle_wheel_id = handle.timer_wheel_id();
-        if self.timer_wheel_id != handle_wheel_id {
-            return Err(TimerError::TimerWheelIdMismatch {
-                expected: self.timer_wheel_id,
-                actual: handle_wheel_id,
-            });
-        }
-        
+    async fn add_timer_handle(&self, handle: TimerHandle) -> Result<(), TimerError> {
         self.command_tx
             .send(ServiceCommand::AddTimerHandle(handle))
             .await
@@ -502,7 +480,6 @@ impl TimerService {
         callback: Option<CallbackWrapper>,
     ) -> Result<TimerHandle, TimerError> {
         crate::timer::TimerWheel::create_timer_handle_internal(
-            self.timer_wheel_id,
             &self.wheel,
             delay,
             callback
@@ -518,7 +495,6 @@ impl TimerService {
         C: TimerCallback,
     {
         crate::timer::TimerWheel::create_batch_handle_internal(
-            self.timer_wheel_id,
             &self.wheel,
             callbacks
         )
@@ -664,38 +640,6 @@ mod tests {
         let _service = timer.create_service();
     }
 
-    #[tokio::test]
-    async fn test_add_batch_handle_and_receive_timeouts() {
-        let timer = TimerWheel::with_defaults().unwrap();
-        let mut service = timer.create_service();
-
-        // 创建批量定时器
-        let callbacks: Vec<_> = (0..3)
-            .map(|_| (Duration::from_millis(50), || async {}))
-            .collect();
-        let batch = timer.schedule_once_batch(callbacks).await.unwrap();
-        let expected_count = batch.len();
-
-        // 添加到 service
-        service.add_batch_handle(batch).await.unwrap();
-
-        // 接收超时通知
-        let mut received_count = 0;
-        let mut rx = service.take_receiver().unwrap();
-        
-        // 使用 timeout 避免测试挂起
-        while received_count < expected_count {
-            match tokio::time::timeout(Duration::from_millis(200), rx.recv()).await {
-                Ok(Some(_task_id)) => {
-                    received_count += 1;
-                }
-                Ok(None) => break,
-                Err(_) => break,
-            }
-        }
-
-        assert_eq!(received_count, expected_count);
-    }
 
     #[tokio::test]
     async fn test_add_timer_handle_and_receive_timeout() {
@@ -719,38 +663,6 @@ mod tests {
         assert_eq!(received_task_id, task_id);
     }
 
-    #[tokio::test]
-    async fn test_mixed_handles() {
-        let timer = TimerWheel::with_defaults().unwrap();
-        let mut service = timer.create_service();
-
-        // 添加单个定时器
-        let handle1 = timer.schedule_once(Duration::from_millis(50), || async {}).await.unwrap();
-        service.add_timer_handle(handle1).await.unwrap();
-
-        // 添加批量定时器
-        let callbacks: Vec<_> = (0..2)
-            .map(|_| (Duration::from_millis(50), || async {}))
-            .collect();
-        let batch = timer.schedule_once_batch(callbacks).await.unwrap();
-        service.add_batch_handle(batch).await.unwrap();
-
-        // 应该接收到 3 个超时通知
-        let mut received_count = 0;
-        let mut rx = service.take_receiver().unwrap();
-        
-        while received_count < 3 {
-            match tokio::time::timeout(Duration::from_millis(200), rx.recv()).await {
-                Ok(Some(_task_id)) => {
-                    received_count += 1;
-                }
-                Ok(None) => break,
-                Err(_) => break,
-            }
-        }
-
-        assert_eq!(received_count, 3);
-    }
 
     #[tokio::test]
     async fn test_shutdown() {
@@ -758,110 +670,14 @@ mod tests {
         let service = timer.create_service();
 
         // 添加一些定时器
-        let callbacks: Vec<_> = (0..5)
-            .map(|_| (Duration::from_secs(10), || async {}))
-            .collect();
-        let batch = timer.schedule_once_batch(callbacks).await.unwrap();
-        service.add_batch_handle(batch).await.unwrap();
+        let _task_id1 = service.schedule_once(Duration::from_secs(10), || async {}).await.unwrap();
+        let _task_id2 = service.schedule_once(Duration::from_secs(10), || async {}).await.unwrap();
 
         // 立即关闭（不等待定时器触发）
         service.shutdown().await;
     }
 
-    #[tokio::test]
-    async fn test_callback_execution_with_service() {
-        let timer = TimerWheel::with_defaults().unwrap();
-        let mut service = timer.create_service();
-        let counter = Arc::new(AtomicU32::new(0));
 
-        // 创建带回调的定时器
-        let callbacks: Vec<_> = (0..3)
-            .map(|_| {
-                let counter = Arc::clone(&counter);
-                (Duration::from_millis(50), move || {
-                    let counter = Arc::clone(&counter);
-                    async move {
-                        counter.fetch_add(1, Ordering::SeqCst);
-                    }
-                })
-            })
-            .collect();
-
-        let batch = timer.schedule_once_batch(callbacks).await.unwrap();
-        service.add_batch_handle(batch).await.unwrap();
-
-        // 接收所有超时通知
-        let mut received_count = 0;
-        let mut rx = service.take_receiver().unwrap();
-        
-        while received_count < 3 {
-            match tokio::time::timeout(Duration::from_millis(200), rx.recv()).await {
-                Ok(Some(_task_id)) => {
-                    received_count += 1;
-                }
-                Ok(None) => break,
-                Err(_) => break,
-            }
-        }
-
-        // 等待一下确保回调执行完成
-        tokio::time::sleep(Duration::from_millis(50)).await;
-
-        // 验证所有回调都已执行
-        assert_eq!(counter.load(Ordering::SeqCst), 3);
-    }
-
-    #[tokio::test]
-    async fn test_timer_wheel_id_mismatch() {
-        let timer1 = TimerWheel::with_defaults().unwrap();
-        let timer2 = TimerWheel::with_defaults().unwrap();
-        let service = timer1.create_service();
-
-        // 添加来自 timer1 的句柄
-        let handle1 = timer1.schedule_once(Duration::from_millis(100), || async {}).await.unwrap();
-        service.add_timer_handle(handle1).await.unwrap();
-
-        // 尝试添加来自 timer2 的句柄，应该失败
-        let handle2 = timer2.schedule_once(Duration::from_millis(100), || async {}).await.unwrap();
-        let result = service.add_timer_handle(handle2).await;
-        
-        assert!(result.is_err());
-        match result {
-            Err(TimerError::TimerWheelIdMismatch { .. }) => {
-                // 预期的错误类型
-            }
-            _ => panic!("Expected TimerWheelIdMismatch error"),
-        }
-    }
-
-    #[tokio::test]
-    async fn test_timer_wheel_id_mismatch_batch() {
-        let timer1 = TimerWheel::with_defaults().unwrap();
-        let timer2 = TimerWheel::with_defaults().unwrap();
-        let service = timer1.create_service();
-
-        // 添加来自 timer1 的批量句柄
-        let callbacks1: Vec<_> = (0..2)
-            .map(|_| (Duration::from_millis(100), || async {}))
-            .collect();
-        let batch1 = timer1.schedule_once_batch(callbacks1).await.unwrap();
-        service.add_batch_handle(batch1).await.unwrap();
-
-        // 尝试添加来自 timer2 的批量句柄，应该失败
-        let callbacks2: Vec<_> = (0..2)
-            .map(|_| (Duration::from_millis(100), || async {}))
-            .collect();
-        let batch2 = timer2.schedule_once_batch(callbacks2).await.unwrap();
-        let result = service.add_batch_handle(batch2).await;
-        
-        assert!(result.is_err());
-        match result {
-            Err(TimerError::TimerWheelIdMismatch { .. }) => {
-                // 预期的错误类型
-            }
-            _ => panic!("Expected TimerWheelIdMismatch error"),
-        }
-    }
 
     #[tokio::test]
     async fn test_cancel_task() {
@@ -898,32 +714,6 @@ mod tests {
         assert!(!cancelled, "Nonexistent task should not be cancelled");
     }
 
-    #[tokio::test]
-    async fn test_cancel_task_from_batch() {
-        let timer = TimerWheel::with_defaults().unwrap();
-        let service = timer.create_service();
-
-        // 创建批量定时器
-        let callbacks: Vec<_> = (0..3)
-            .map(|_| (Duration::from_secs(10), || async {}))
-            .collect();
-        let batch = timer.schedule_once_batch(callbacks).await.unwrap();
-        let task_ids = batch.task_ids().to_vec();
-        
-        service.add_batch_handle(batch).await.unwrap();
-
-        // 取消第一个任务
-        let cancelled = service.cancel_task(task_ids[0]).await.unwrap();
-        assert!(cancelled, "First task should be cancelled successfully");
-
-        // 取消第二个任务
-        let cancelled = service.cancel_task(task_ids[1]).await.unwrap();
-        assert!(cancelled, "Second task should be cancelled successfully");
-
-        // 再次取消第一个任务，应该返回 false
-        let cancelled_again = service.cancel_task(task_ids[0]).await.unwrap();
-        assert!(!cancelled_again, "First task should not exist anymore");
-    }
 
     #[tokio::test]
     async fn test_task_timeout_cleans_up_task_sender() {

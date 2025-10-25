@@ -29,32 +29,6 @@ impl Default for TaskId {
     }
 }
 
-/// 全局唯一的时间轮 ID 生成器
-static NEXT_TIMER_WHEEL_ID: AtomicU64 = AtomicU64::new(1);
-
-/// 时间轮定时器系统的唯一标识符
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct TimerWheelId(u64);
-
-impl TimerWheelId {
-    /// 生成一个新的唯一时间轮 ID
-    pub fn new() -> Self {
-        TimerWheelId(NEXT_TIMER_WHEEL_ID.fetch_add(1, Ordering::Relaxed))
-    }
-
-    /// 获取时间轮 ID 的数值
-    #[allow(dead_code)]
-    pub fn as_u64(&self) -> u64 {
-        self.0
-    }
-}
-
-impl Default for TimerWheelId {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 /// 定时器回调 trait
 /// 
 /// 实现此 trait 的类型可以作为定时器的回调函数使用。
