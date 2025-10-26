@@ -4,6 +4,10 @@
 
 [![Rust](https://img.shields.io/badge/rust-1.70%2B-orange.svg)](https://www.rust-lang.org/)
 [![Tokio](https://img.shields.io/badge/tokio-1.48-blue.svg)](https://tokio.rs/)
+[![Crates.io](https://img.shields.io/crates/v/kestrel-protocol-timer.svg)](https://crates.io/crates/kestrel-protocol-timer)
+[![Documentation](https://docs.rs/kestrel-protocol-timer/badge.svg)](https://docs.rs/kestrel-protocol-timer)
+[![Downloads](https://img.shields.io/crates/d/kestrel-protocol-timer.svg)](https://crates.io/crates/kestrel-protocol-timer)
+[![License](https://img.shields.io/crates/l/kestrel-protocol-timer.svg)](https://github.com/ShaoG-R/kestrel-protocol-timer#license)
 
 ## 📚 目录
 
