@@ -1090,7 +1090,7 @@ async fn apply_buff(
 
 ```bash
 # 克隆仓库
-git clone https://github.com/yourusername/kestrel-protocol-timer.git
+git clone https://github.com/ShaoG-R/kestrel-protocol-timer.git
 cd kestrel-protocol-timer
 
 # 运行测试
