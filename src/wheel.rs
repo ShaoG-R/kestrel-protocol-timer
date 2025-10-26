@@ -103,10 +103,12 @@ impl Wheel {
     /// # 参数
     /// - `delay`: 延迟时间
     /// - `task`: 定时器任务
+    /// - `notifier`: 完成通知器
     ///
     /// # 返回
     /// 任务 ID
-    pub fn insert(&mut self, delay: Duration, mut task: TimerTask) -> TaskId {
+
+    pub fn insert(&mut self, delay: Duration, mut task: TimerTask, notifier: crate::task::CompletionNotifier) -> TaskId {
         let ticks = self.delay_to_ticks(delay);
         let total_ticks = self.current_tick + ticks;
         
@@ -117,8 +119,8 @@ impl Wheel {
         // 轮次 = 任务到期时的轮数 - 当前轮数
         let rounds = (total_ticks / self.slot_count as u64).saturating_sub(self.current_tick / self.slot_count as u64) as u32;
 
-        task.deadline_tick = total_ticks;
-        task.rounds = rounds;
+        // 准备任务注册（设置 notifier 和时间轮参数）
+        task.prepare_for_registration(notifier, total_ticks, rounds);
 
         let task_id = task.id;
         
@@ -138,7 +140,7 @@ impl Wheel {
     /// 批量插入定时器任务
     ///
     /// # 参数
-    /// - `tasks`: (延迟时间, 任务) 的元组列表
+    /// - `tasks`: (延迟时间, 任务, 完成通知器) 的元组列表
     ///
     /// # 返回
     /// 任务 ID 列表
@@ -146,10 +148,10 @@ impl Wheel {
     /// # 性能优势
     /// - 减少重复的边界检查和容量调整
     /// - 对于相同延迟的任务，可以复用计算结果
-    pub fn insert_batch(&mut self, tasks: Vec<(Duration, TimerTask)>) -> Vec<TaskId> {
+    pub fn insert_batch(&mut self, tasks: Vec<(Duration, TimerTask, crate::task::CompletionNotifier)>) -> Vec<TaskId> {
         let mut task_ids = Vec::with_capacity(tasks.len());
         
-        for (delay, mut task) in tasks {
+        for (delay, mut task, notifier) in tasks {
             let ticks = self.delay_to_ticks(delay);
             let total_ticks = self.current_tick + ticks;
             
@@ -158,8 +160,8 @@ impl Wheel {
             let rounds = (total_ticks / self.slot_count as u64)
                 .saturating_sub(self.current_tick / self.slot_count as u64) as u32;
 
-            task.deadline_tick = total_ticks;
-            task.rounds = rounds;
+            // 准备任务注册（设置 notifier 和时间轮参数）
+            task.prepare_for_registration(notifier, total_ticks, rounds);
 
             let task_id = task.id;
             
@@ -382,14 +384,13 @@ mod tests {
         let mut wheel = Wheel::new(WheelConfig::default());
         
         // 创建批量任务
-        let tasks: Vec<(Duration, TimerTask)> = (0..10)
+        let tasks: Vec<(Duration, TimerTask, CompletionNotifier)> = (0..10)
             .map(|i| {
                 let callback = Arc::new(|| async {}) as Arc<dyn crate::task::TimerCallback>;
                 let (completion_tx, _completion_rx) = tokio::sync::oneshot::channel();
                 let notifier = CompletionNotifier(completion_tx);
-                let mut task = TimerTask::new(Duration::from_millis(100 + i * 10), Some(callback));
-                task.prepare_for_registration(notifier, 0, 0);
-                (Duration::from_millis(100 + i * 10), task)
+                let task = TimerTask::new(Duration::from_millis(100 + i * 10), Some(callback));
+                (Duration::from_millis(100 + i * 10), task, notifier)
             })
             .collect();
         
@@ -412,9 +413,8 @@ mod tests {
             let callback = Arc::new(|| async {}) as Arc<dyn crate::task::TimerCallback>;
             let (completion_tx, _completion_rx) = tokio::sync::oneshot::channel();
             let notifier = CompletionNotifier(completion_tx);
-            let mut task = TimerTask::new(Duration::from_millis(100 + i * 10), Some(callback));
-            task.prepare_for_registration(notifier, 0, 0);
-            let task_id = wheel.insert(Duration::from_millis(100 + i * 10), task);
+            let task = TimerTask::new(Duration::from_millis(100 + i * 10), Some(callback));
+            let task_id = wheel.insert(Duration::from_millis(100 + i * 10), task, notifier);
             task_ids.push(task_id);
         }
         
@@ -451,9 +451,8 @@ mod tests {
             let callback = Arc::new(|| async {}) as Arc<dyn crate::task::TimerCallback>;
             let (completion_tx, _completion_rx) = tokio::sync::oneshot::channel();
             let notifier = CompletionNotifier(completion_tx);
-            let mut task = TimerTask::new(Duration::from_millis(100), Some(callback));
-            task.prepare_for_registration(notifier, 0, 0);
-            let task_id = wheel.insert(Duration::from_millis(100), task);
+            let task = TimerTask::new(Duration::from_millis(100), Some(callback));
+            let task_id = wheel.insert(Duration::from_millis(100), task, notifier);
             task_ids.push(task_id);
         }
         

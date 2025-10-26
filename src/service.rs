@@ -349,32 +349,17 @@ impl TimerService {
     /// service.register(task).await;
     /// # }
     /// ```
-    pub async fn register(&self, mut task: crate::task::TimerTask) {
-        // 使用内部方法注册任务
+    pub async fn register(&self, task: crate::task::TimerTask) {
         let (completion_tx, completion_rx) = tokio::sync::oneshot::channel();
         let notifier = crate::task::CompletionNotifier(completion_tx);
         
         let delay = task.delay;
-        
-        // 准备注册
-        {
-            let wheel_guard = self.wheel.lock();
-            let ticks = wheel_guard.delay_to_ticks(delay);
-            let current_tick = wheel_guard.current_tick();
-            let total_ticks = current_tick + ticks;
-            let slot_count = wheel_guard.slot_count();
-            let rounds = (total_ticks / slot_count as u64)
-                .saturating_sub(current_tick / slot_count as u64) as u32;
-            
-            task.prepare_for_registration(notifier, total_ticks, rounds);
-        }
-        
         let task_id = task.id;
         
-        // 插入到时间轮
+        // 单次加锁完成所有操作
         {
             let mut wheel_guard = self.wheel.lock();
-            wheel_guard.insert(delay, task);
+            wheel_guard.insert(delay, task, notifier);
         }
         
         // 创建句柄并添加到服务管理
@@ -408,35 +393,19 @@ impl TimerService {
         let mut completion_rxs = Vec::with_capacity(tasks.len());
         let mut task_ids = Vec::with_capacity(tasks.len());
         
-        // 准备所有任务
-        let prepared_tasks: Vec<(Duration, crate::task::TimerTask)> = tasks
+        // 步骤1: 准备所有 channels 和 notifiers（无锁）
+        let prepared_tasks: Vec<(Duration, crate::task::TimerTask, crate::task::CompletionNotifier)> = tasks
             .into_iter()
-            .map(|mut task| {
+            .map(|task| {
                 let (completion_tx, completion_rx) = tokio::sync::oneshot::channel();
                 let notifier = crate::task::CompletionNotifier(completion_tx);
                 completion_rxs.push(completion_rx);
-                
-                let delay = task.delay;
                 task_ids.push(task.id);
-                
-                // 准备注册
-                {
-                    let wheel_guard = self.wheel.lock();
-                    let ticks = wheel_guard.delay_to_ticks(delay);
-                    let current_tick = wheel_guard.current_tick();
-                    let total_ticks = current_tick + ticks;
-                    let slot_count = wheel_guard.slot_count();
-                    let rounds = (total_ticks / slot_count as u64)
-                        .saturating_sub(current_tick / slot_count as u64) as u32;
-                    
-                    task.prepare_for_registration(notifier, total_ticks, rounds);
-                }
-                
-                (delay, task)
+                (task.delay, task, notifier)
             })
             .collect();
         
-        // 批量插入到时间轮
+        // 步骤2: 单次加锁，批量插入
         {
             let mut wheel_guard = self.wheel.lock();
             wheel_guard.insert_batch(prepared_tasks);
