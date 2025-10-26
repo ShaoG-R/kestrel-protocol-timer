@@ -1,7 +1,7 @@
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use timer::TimerWheel;
+use kestrel_protocol_timer::TimerWheel;
 use futures::future;
 
 #[tokio::test]

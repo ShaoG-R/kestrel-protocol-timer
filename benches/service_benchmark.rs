@@ -2,7 +2,7 @@ use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
-use timer::TimerWheel;
+use kestrel_protocol_timer::TimerWheel;
 use std::hint::black_box;
 
 /// 基准测试：单个定时器调度

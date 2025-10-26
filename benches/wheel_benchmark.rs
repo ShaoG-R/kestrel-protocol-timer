@@ -1,7 +1,7 @@
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 use std::hint::black_box;
 use std::time::Duration;
-use timer::TimerWheel;
+use kestrel_protocol_timer::TimerWheel;
 
 /// 基准测试：单个任务插入（通过 TimerWheel API）
 fn bench_wheel_insert(c: &mut Criterion) {
