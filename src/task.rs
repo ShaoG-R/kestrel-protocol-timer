@@ -12,8 +12,8 @@ static NEXT_TASK_ID: AtomicU64 = AtomicU64::new(1);
 pub struct TaskId(u64);
 
 impl TaskId {
-    /// 生成一个新的唯一任务 ID
-    pub fn new() -> Self {
+    /// 生成一个新的唯一任务 ID（内部使用）
+    pub(crate) fn new() -> Self {
         TaskId(NEXT_TASK_ID.fetch_add(1, Ordering::Relaxed))
     }
 
@@ -74,42 +74,92 @@ pub type CallbackWrapper = Arc<dyn TimerCallback>;
 pub struct CompletionNotifier(pub oneshot::Sender<()>);
 
 /// 定时器任务
+/// 
+/// 用户通过两步式 API 使用：
+/// 1. 使用 `TimerTask::new()` 创建任务
+/// 2. 使用 `TimerWheel::register()` 或 `TimerService::register()` 注册任务
 pub struct TimerTask {
     /// 任务唯一标识符
-    pub id: TaskId,
+    pub(crate) id: TaskId,
+    
+    /// 用户指定的延迟时间
+    pub(crate) delay: std::time::Duration,
     
     /// 到期时间（相对于时间轮的 tick 数）
-    pub deadline_tick: u64,
+    pub(crate) deadline_tick: u64,
     
     /// 轮次计数（用于超出时间轮范围的任务）
-    pub rounds: u32,
+    pub(crate) rounds: u32,
     
     /// 异步回调函数（可选）
-    pub callback: Option<CallbackWrapper>,
+    pub(crate) callback: Option<CallbackWrapper>,
     
-    /// 完成通知器（用于在任务完成时发送通知）
-    pub completion_notifier: CompletionNotifier,
+    /// 完成通知器（用于在任务完成时发送通知，注册时创建）
+    pub(crate) completion_notifier: Option<CompletionNotifier>,
 }
 
 impl TimerTask {
-    /// 创建一次性定时器任务
-    pub fn once(
-        deadline_tick: u64,
-        rounds: u32,
-        callback: Option<CallbackWrapper>,
-        completion_notifier: CompletionNotifier,
-    ) -> Self {
+    /// 创建新的定时器任务
+    /// 
+    /// # 参数
+    /// - `delay`: 延迟时间
+    /// - `callback`: 回调函数（可选）
+    /// 
+    /// # 示例
+    /// ```no_run
+    /// use kestrel_protocol_timer::TimerTask;
+    /// use std::time::Duration;
+    /// use std::sync::Arc;
+    /// 
+    /// // 创建带回调的任务
+    /// let callback = Arc::new(|| async {
+    ///     println!("Timer fired!");
+    /// });
+    /// let task = TimerTask::new(Duration::from_secs(1), Some(callback));
+    /// 
+    /// // 创建仅通知的任务
+    /// let task = TimerTask::new(Duration::from_secs(1), None);
+    /// ```
+    pub fn new(delay: std::time::Duration, callback: Option<CallbackWrapper>) -> Self {
         Self {
             id: TaskId::new(),
-            deadline_tick,
-            rounds,
+            delay,
+            deadline_tick: 0,
+            rounds: 0,
             callback,
-            completion_notifier,
+            completion_notifier: None,
         }
     }
 
+    /// 获取任务 ID
+    /// 
+    /// # 示例
+    /// ```no_run
+    /// use kestrel_protocol_timer::TimerTask;
+    /// use std::time::Duration;
+    /// 
+    /// let task = TimerTask::new(Duration::from_secs(1), None);
+    /// let task_id = task.get_id();
+    /// println!("Task ID: {:?}", task_id);
+    /// ```
+    pub fn get_id(&self) -> TaskId {
+        self.id
+    }
+
+    /// 内部方法：准备注册（在注册时由时间轮调用）
+    pub(crate) fn prepare_for_registration(
+        &mut self,
+        completion_notifier: CompletionNotifier,
+        deadline_tick: u64,
+        rounds: u32,
+    ) {
+        self.completion_notifier = Some(completion_notifier);
+        self.deadline_tick = deadline_tick;
+        self.rounds = rounds;
+    }
+
     /// 获取回调函数的克隆（如果存在）
-    pub fn get_callback(&self) -> Option<CallbackWrapper> {
+    pub(crate) fn get_callback(&self) -> Option<CallbackWrapper> {
         self.callback.as_ref().map(Arc::clone)
     }
 }

@@ -387,7 +387,8 @@ mod tests {
                 let callback = Arc::new(|| async {}) as Arc<dyn crate::task::TimerCallback>;
                 let (completion_tx, _completion_rx) = tokio::sync::oneshot::channel();
                 let notifier = CompletionNotifier(completion_tx);
-                let task = TimerTask::once(0, 0, Some(callback), notifier);
+                let mut task = TimerTask::new(Duration::from_millis(100 + i * 10), Some(callback));
+                task.prepare_for_registration(notifier, 0, 0);
                 (Duration::from_millis(100 + i * 10), task)
             })
             .collect();
@@ -411,7 +412,8 @@ mod tests {
             let callback = Arc::new(|| async {}) as Arc<dyn crate::task::TimerCallback>;
             let (completion_tx, _completion_rx) = tokio::sync::oneshot::channel();
             let notifier = CompletionNotifier(completion_tx);
-            let task = TimerTask::once(0, 0, Some(callback), notifier);
+            let mut task = TimerTask::new(Duration::from_millis(100 + i * 10), Some(callback));
+            task.prepare_for_registration(notifier, 0, 0);
             let task_id = wheel.insert(Duration::from_millis(100 + i * 10), task);
             task_ids.push(task_id);
         }
@@ -449,7 +451,8 @@ mod tests {
             let callback = Arc::new(|| async {}) as Arc<dyn crate::task::TimerCallback>;
             let (completion_tx, _completion_rx) = tokio::sync::oneshot::channel();
             let notifier = CompletionNotifier(completion_tx);
-            let task = TimerTask::once(0, 0, Some(callback), notifier);
+            let mut task = TimerTask::new(Duration::from_millis(100), Some(callback));
+            task.prepare_for_registration(notifier, 0, 0);
             let task_id = wheel.insert(Duration::from_millis(100), task);
             task_ids.push(task_id);
         }

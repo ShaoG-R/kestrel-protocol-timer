@@ -21,7 +21,7 @@ async fn test_large_scale_timers() {
         let delay = Duration::from_millis(10 + (i % 100) as u64);
         
         let future = async move {
-            timer_clone.schedule_once(
+            let task = TimerWheel::create_task(
                 delay,
                 move || {
                     let counter = Arc::clone(&counter_clone);
@@ -29,7 +29,8 @@ async fn test_large_scale_timers() {
                         counter.fetch_add(1, Ordering::SeqCst);
                     }
                 },
-            ).await
+            );
+            timer_clone.register(task)
         };
         futures.push(future);
     }
@@ -58,7 +59,7 @@ async fn test_timer_precision() {
     *start_time.lock() = Some(Instant::now());
 
     let end_clone = Arc::clone(&end_time);
-    let handle = timer.schedule_once(
+    let task = TimerWheel::create_task(
         Duration::from_millis(100),
         move || {
             let end_time = Arc::clone(&end_clone);
@@ -66,7 +67,8 @@ async fn test_timer_precision() {
                 *end_time.lock() = Some(Instant::now());
             }
         },
-    ).await;
+    );
+    let handle = timer.register(task);
 
     // 使用 completion_receiver 等待定时器完成，而不是固定的sleep时间
     // 这样可以避免竞态条件
@@ -103,7 +105,7 @@ async fn test_concurrent_operations() {
             let counter_clone = Arc::clone(&counter);
             
             let future = async move {
-                timer_clone.schedule_once(
+                let task = TimerWheel::create_task(
                     Duration::from_millis(50),
                     move || {
                         let counter = Arc::clone(&counter_clone);
@@ -111,7 +113,8 @@ async fn test_concurrent_operations() {
                             counter.fetch_add(1, Ordering::SeqCst);
                         }
                     },
-                ).await
+                );
+                timer_clone.register(task)
             };
             
             all_futures.push(future);
@@ -143,7 +146,7 @@ async fn test_timer_with_different_delays() {
     for (idx, &delay_ms) in delays.iter().enumerate() {
         let results_clone = Arc::clone(&results);
         
-        let handle = timer.schedule_once(
+        let task = TimerWheel::create_task(
             Duration::from_millis(delay_ms),
             move || {
                 let results = Arc::clone(&results_clone);
@@ -151,7 +154,8 @@ async fn test_timer_with_different_delays() {
                     results.lock().push((idx, delay_ms));
                 }
             },
-        ).await;
+        );
+        let handle = timer.register(task);
         
         handles.push(handle);
     }
@@ -180,10 +184,11 @@ async fn test_memory_efficiency() {
     for _ in 0..5000 {
         let timer_clone = Arc::clone(&timer);
         let future = async move {
-            timer_clone.schedule_once(
+            let task = TimerWheel::create_task(
                 Duration::from_secs(10),
                 || async {},
-            ).await
+            );
+            timer_clone.register(task)
         };
         create_futures.push(future);
     }
@@ -228,7 +233,8 @@ async fn test_batch_schedule() {
         .collect();
     
     // 批量调度
-    let batch = timer.schedule_once_batch(callbacks).await;
+    let tasks = TimerWheel::create_batch(callbacks);
+    let batch = timer.register_batch(tasks);
     
     println!("批量调度 {} 个定时器耗时: {:?}", BATCH_SIZE, start.elapsed());
     assert_eq!(batch.len(), BATCH_SIZE);
@@ -255,7 +261,8 @@ async fn test_batch_cancel() {
         })
         .collect();
     
-    let batch = timer.schedule_once_batch(callbacks).await;
+    let tasks = TimerWheel::create_batch(callbacks);
+    let batch = timer.register_batch(tasks);
     assert_eq!(batch.len(), TIMER_COUNT);
     
     // 批量取消（使用 BatchHandle 的 cancel_all 方法）
@@ -277,7 +284,8 @@ async fn test_batch_cancel_partial() {
         .map(|_| (Duration::from_millis(100), || async {}))
         .collect();
     
-    let batch = timer.schedule_once_batch(callbacks).await;
+    let tasks = TimerWheel::create_batch(callbacks);
+    let batch = timer.register_batch(tasks);
     
     // 转换为独立的句柄
     let mut handles = batch.into_handles();
@@ -318,7 +326,8 @@ async fn test_batch_cancel_no_wait() {
         .map(|_| (Duration::from_secs(10), || async {}))
         .collect();
     
-    let batch = timer.schedule_once_batch(callbacks).await;
+    let tasks = TimerWheel::create_batch(callbacks);
+    let batch = timer.register_batch(tasks);
     
     // 批量取消（使用 BatchHandle 的 cancel_all 方法，现在是同步的）
     let start = Instant::now();

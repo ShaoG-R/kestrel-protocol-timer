@@ -12,7 +12,7 @@
 //! ## 快速开始
 //!
 //! ```no_run
-//! use kestrel_protocol_timer::TimerWheel;
+//! use kestrel_protocol_timer::{TimerWheel, TimerTask};
 //! use std::time::Duration;
 //!
 //! #[tokio::main]
@@ -20,10 +20,14 @@
 //!     // 创建定时器管理器
 //!     let timer = TimerWheel::with_defaults();
 //!     
-//!     // 调度一次性定时器
-//!     let handle = timer.schedule_once(Duration::from_secs(1), || async {
+//!     // 步骤 1: 创建定时器任务
+//!     let task = TimerWheel::create_task(Duration::from_secs(1), || async {
 //!         println!("Timer fired after 1 second!");
-//!     }).await;
+//!     });
+//!     let task_id = task.get_id();
+//!     
+//!     // 步骤 2: 注册定时器任务
+//!     let handle = timer.register(task);
 //!     
 //!     // 等待定时器触发
 //!     tokio::time::sleep(Duration::from_secs(2)).await;
@@ -65,7 +69,7 @@ pub use config::{
     WheelConfig, WheelConfigBuilder,
 };
 pub use error::TimerError;
-pub use task::{CallbackWrapper, CompletionNotifier, TaskId, TimerCallback};
+pub use task::{CallbackWrapper, CompletionNotifier, TaskId, TimerCallback, TimerTask};
 pub use timer::{BatchHandle, BatchHandleIter, CompletionReceiver, TimerHandle, TimerWheel};
 pub use service::TimerService;
 
@@ -82,7 +86,7 @@ mod tests {
         let counter = Arc::new(AtomicU32::new(0));
         let counter_clone = Arc::clone(&counter);
 
-        timer.schedule_once(
+        let task = TimerWheel::create_task(
             Duration::from_millis(50),
             move || {
                 let counter =  Arc::clone(&counter_clone);
@@ -90,7 +94,8 @@ mod tests {
                     counter.fetch_add(1, Ordering::SeqCst);
                 }
             },
-        ).await;
+        );
+        timer.register(task);
 
         tokio::time::sleep(Duration::from_millis(100)).await;
         assert_eq!(counter.load(Ordering::SeqCst), 1);
@@ -104,7 +109,7 @@ mod tests {
         // 创建 10 个定时器
         for i in 0..10 {
             let counter_clone = Arc::clone(&counter);
-            timer.schedule_once(
+            let task = TimerWheel::create_task(
                 Duration::from_millis(10 * (i + 1)),
                 move || {
                     let counter = Arc::clone(&counter_clone);
@@ -112,7 +117,8 @@ mod tests {
                         counter.fetch_add(1, Ordering::SeqCst);
                     }
                 },
-            ).await;
+            );
+            timer.register(task);
         }
 
         tokio::time::sleep(Duration::from_millis(200)).await;
@@ -128,7 +134,7 @@ mod tests {
         let mut handles = Vec::new();
         for _ in 0..5 {
             let counter_clone = Arc::clone(&counter);
-            let handle = timer.schedule_once(
+            let task = TimerWheel::create_task(
                 Duration::from_millis(100),
                 move || {
                     let counter = Arc::clone(&counter_clone);
@@ -136,7 +142,8 @@ mod tests {
                         counter.fetch_add(1, Ordering::SeqCst);
                     }
                 },
-            ).await;
+            );
+            let handle = timer.register(task);
             handles.push(handle);
         }
 
@@ -157,7 +164,7 @@ mod tests {
         let counter = Arc::new(AtomicU32::new(0));
         let counter_clone = Arc::clone(&counter);
 
-        let handle = timer.schedule_once(
+        let task = TimerWheel::create_task(
             Duration::from_millis(50),
             move || {
                 let counter = Arc::clone(&counter_clone);
@@ -165,7 +172,8 @@ mod tests {
                     counter.fetch_add(1, Ordering::SeqCst);
                 }
             },
-        ).await;
+        );
+        let handle = timer.register(task);
 
         // 等待完成通知
         handle.into_completion_receiver().0.await.expect("Should receive completion notification");
@@ -179,7 +187,8 @@ mod tests {
     async fn test_notify_only_timer_once() {
         let timer = TimerWheel::with_defaults();
         
-        let handle = timer.schedule_once_notify(Duration::from_millis(50)).await;
+        let task = TimerTask::new(Duration::from_millis(50), None);
+        let handle = timer.register(task);
 
         // 等待完成通知（无回调，仅通知）
         handle.into_completion_receiver().0.await.expect("Should receive completion notification");
@@ -205,7 +214,8 @@ mod tests {
             })
             .collect();
 
-        let batch = timer.schedule_once_batch(callbacks).await;
+        let tasks = TimerWheel::create_batch(callbacks);
+        let batch = timer.register_batch(tasks);
         let receivers = batch.into_completion_receivers();
 
         // 等待所有完成通知

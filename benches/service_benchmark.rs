@@ -20,15 +20,17 @@ fn bench_schedule_single(c: &mut Criterion) {
                 let timer = TimerWheel::with_defaults();
                 let service = timer.create_service();
                 
-                // 测量阶段：只测量 schedule_once 的性能
+                // 测量阶段：只测量 create_task + register 的性能
                 let start = std::time::Instant::now();
                 
-                let task_id = black_box(
-                    service.schedule_once(
+                let task = black_box(
+                    kestrel_protocol_timer::TimerService::create_task(
                         Duration::from_secs(10),
                         || async {}
-                    ).await
+                    )
                 );
+                let task_id = task.get_id();
+                service.register(task).await;
                 
                 total_duration += start.elapsed();
                 black_box(task_id);
@@ -61,12 +63,14 @@ fn bench_schedule_batch(c: &mut Criterion) {
                         .map(|_| (Duration::from_secs(10), || async {}))
                         .collect();
                     
-                    // 测量阶段：只测量 schedule_once_batch 的性能
+                    // 测量阶段：只测量 create_batch + register_batch 的性能
                     let start = std::time::Instant::now();
                     
-                    let task_ids = black_box(
-                        service.schedule_once_batch(callbacks).await
+                    let tasks = black_box(
+                        kestrel_protocol_timer::TimerService::create_batch(callbacks)
                     );
+                    let task_ids: Vec<_> = tasks.iter().map(|t| t.get_id()).collect();
+                    service.register_batch(tasks).await;
                     
                     total_duration += start.elapsed();
                     black_box(task_ids);
@@ -95,10 +99,12 @@ fn bench_cancel_single(c: &mut Criterion) {
                 let timer = TimerWheel::with_defaults();
                 let service = timer.create_service();
                 
-                let task_id = service.schedule_once(
+                let task = kestrel_protocol_timer::TimerService::create_task(
                     Duration::from_secs(10),
                     || async {}
-                ).await;
+                );
+                let task_id = task.get_id();
+                service.register(task).await;
                 
                 // 测量阶段：只测量 cancel_task 的性能
                 let start = std::time::Instant::now();
@@ -137,7 +143,9 @@ fn bench_cancel_batch(c: &mut Criterion) {
                     let callbacks: Vec<_> = (0..size)
                         .map(|_| (Duration::from_secs(10), || async {}))
                         .collect();
-                    let task_ids = service.schedule_once_batch(callbacks).await;
+                    let tasks = kestrel_protocol_timer::TimerService::create_batch(callbacks);
+                    let task_ids: Vec<_> = tasks.iter().map(|t| t.get_id()).collect();
+                    service.register_batch(tasks).await;
                     
                     // 测量阶段：只测量 cancel_batch 的性能
                     let start = std::time::Instant::now();
@@ -172,7 +180,7 @@ fn bench_concurrent_schedule(c: &mut Criterion) {
                 for _ in 0..iters {
                     // 准备阶段：创建 timer 和 service（不计入测量）
                     let timer = TimerWheel::with_defaults();
-                    let service = timer.create_service();
+                    let service = Arc::new(timer.create_service());
                     
                     // 测量阶段：只测量并发调度的性能
                     let start = std::time::Instant::now();
@@ -180,11 +188,14 @@ fn bench_concurrent_schedule(c: &mut Criterion) {
                     // 并发执行多个调度操作
                     let mut handles = Vec::new();
                     for _ in 0..concurrent_ops {
-                        let callbacks: Vec<_> = (0..10)
-                            .map(|_| (Duration::from_secs(10), || async {}))
-                            .collect();
-                        
-                        let fut = service.schedule_once_batch(callbacks);
+                        let service_clone = Arc::clone(&service);
+                        let fut = async move {
+                            let callbacks: Vec<_> = (0..10)
+                                .map(|_| (Duration::from_secs(10), || async {}))
+                                .collect();
+                            let tasks = kestrel_protocol_timer::TimerService::create_batch(callbacks);
+                            service_clone.register_batch(tasks).await;
+                        };
                         handles.push(fut);
                     }
                     
@@ -221,7 +232,9 @@ fn bench_high_frequency_cancel(c: &mut Criterion) {
                 let callbacks: Vec<_> = (0..1000)
                     .map(|_| (Duration::from_secs(10), || async {}))
                     .collect();
-                        let task_ids = service.schedule_once_batch(callbacks).await;
+                let tasks = kestrel_protocol_timer::TimerService::create_batch(callbacks);
+                let task_ids: Vec<_> = tasks.iter().map(|t| t.get_id()).collect();
+                service.register_batch(tasks).await;
                 
                 // 测量阶段：只测量 cancel_batch 的性能
                 let start = std::time::Instant::now();
@@ -265,7 +278,9 @@ fn bench_mixed_operations(c: &mut Criterion) {
                     let callbacks: Vec<_> = (0..10)
                         .map(|_| (Duration::from_secs(10), || async {}))
                         .collect();
-                    let task_ids = service.schedule_once_batch(callbacks).await;
+                    let tasks = kestrel_protocol_timer::TimerService::create_batch(callbacks);
+                    let task_ids: Vec<_> = tasks.iter().map(|t| t.get_id()).collect();
+                    service.register_batch(tasks).await;
                     
                     // 使用批量取消前5个任务
                     let to_cancel: Vec<_> = task_ids.iter().take(5).copied().collect();
@@ -299,12 +314,14 @@ fn bench_schedule_notify(c: &mut Criterion) {
                 let timer = TimerWheel::with_defaults();
                 let service = timer.create_service();
                 
-                // 测量阶段：只测量 schedule_once_notify 的性能
+                // 测量阶段：只测量仅通知定时器的创建和注册性能
                 let start = std::time::Instant::now();
                 
-                let task_id = black_box(
-                    service.schedule_once_notify(Duration::from_secs(10)).await
+                let task = black_box(
+                    kestrel_protocol_timer::TimerTask::new(Duration::from_secs(10), None)
                 );
+                let task_id = task.get_id();
+                service.register(task).await;
                 
                 total_duration += start.elapsed();
                 black_box(task_id);
@@ -329,11 +346,14 @@ fn bench_schedule_notify(c: &mut Criterion) {
                     // 测量阶段：测量批量通知调度的性能
                     let start = std::time::Instant::now();
                     
+                    let mut tasks = Vec::new();
                     let mut task_ids = Vec::new();
                     for _ in 0..size {
-                        let task_id = service.schedule_once_notify(Duration::from_secs(10)).await;
-                        task_ids.push(task_id);
+                        let task = kestrel_protocol_timer::TimerTask::new(Duration::from_secs(10), None);
+                        task_ids.push(task.get_id());
+                        tasks.push(task);
                     }
+                    service.register_batch(tasks).await;
                     
                     total_duration += start.elapsed();
                     black_box(task_ids);
@@ -363,12 +383,12 @@ fn bench_schedule_with_callback(c: &mut Criterion) {
                 let service = timer.create_service();
                 let counter = Arc::new(AtomicU32::new(0));
                 
-                // 测量阶段：只测量 schedule_once 的性能
+                // 测量阶段：只测量 create_task + register 的性能
                 let start = std::time::Instant::now();
                 
                 let counter_clone = Arc::clone(&counter);
-                let task_id = black_box(
-                    service.schedule_once(
+                let task = black_box(
+                    kestrel_protocol_timer::TimerService::create_task(
                         Duration::from_secs(10),
                         move || {
                             let counter = Arc::clone(&counter_clone);
@@ -376,8 +396,10 @@ fn bench_schedule_with_callback(c: &mut Criterion) {
                                 counter.fetch_add(1, Ordering::SeqCst);
                             }
                         }
-                    ).await
+                    )
                 );
+                let task_id = task.get_id();
+                service.register(task).await;
                 
                 total_duration += start.elapsed();
                 black_box(task_id);

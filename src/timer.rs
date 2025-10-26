@@ -1,5 +1,5 @@
 use crate::config::{ServiceConfig, WheelConfig};
-use crate::task::{CallbackWrapper, CompletionNotifier, TaskId, TimerCallback, TimerTask};
+use crate::task::{CallbackWrapper, TaskId, TimerCallback};
 use crate::wheel::Wheel;
 use parking_lot::Mutex;
 use std::sync::Arc;
@@ -32,12 +32,13 @@ impl TimerHandle {
     ///
     /// # 示例
     /// ```no_run
-    /// # use kestrel_protocol_timer::TimerWheel;
+    /// # use kestrel_protocol_timer::{TimerWheel, TimerTask};
     /// # use std::time::Duration;
     /// # #[tokio::main]
     /// # async fn main() {
     /// let timer = TimerWheel::with_defaults();
-    /// let handle = timer.schedule_once(Duration::from_secs(1), || async {}).await;
+    /// let task = TimerWheel::create_task(Duration::from_secs(1), || async {});
+    /// let handle = timer.register(task);
     /// 
     /// // 取消定时器
     /// let success = handle.cancel();
@@ -49,23 +50,19 @@ impl TimerHandle {
         wheel.cancel(self.task_id)
     }
 
-    /// 获取任务 ID
-    pub fn task_id(&self) -> TaskId {
-        self.task_id
-    }
-
     /// 获取完成通知接收器的可变引用
     ///
     /// # 示例
     /// ```no_run
-    /// # use kestrel_protocol_timer::TimerWheel;
+    /// # use kestrel_protocol_timer::{TimerWheel, TimerTask};
     /// # use std::time::Duration;
     /// # #[tokio::main]
     /// # async fn main() {
     /// let timer = TimerWheel::with_defaults();
-    /// let handle = timer.schedule_once(Duration::from_secs(1), || async {
+    /// let task = TimerWheel::create_task(Duration::from_secs(1), || async {
     ///     println!("Timer fired!");
-    /// }).await;
+    /// });
+    /// let handle = timer.register(task);
     /// 
     /// // 等待定时器完成（使用 into_completion_receiver 消耗句柄）
     /// handle.into_completion_receiver().0.await.ok();
@@ -80,14 +77,15 @@ impl TimerHandle {
     ///
     /// # 示例
     /// ```no_run
-    /// # use kestrel_protocol_timer::TimerWheel;
+    /// # use kestrel_protocol_timer::{TimerWheel, TimerTask};
     /// # use std::time::Duration;
     /// # #[tokio::main]
     /// # async fn main() {
     /// let timer = TimerWheel::with_defaults();
-    /// let handle = timer.schedule_once(Duration::from_secs(1), || async {
+    /// let task = TimerWheel::create_task(Duration::from_secs(1), || async {
     ///     println!("Timer fired!");
-    /// }).await;
+    /// });
+    /// let handle = timer.register(task);
     /// 
     /// // 等待定时器完成
     /// handle.into_completion_receiver().0.await.ok();
@@ -123,15 +121,15 @@ impl BatchHandle {
     ///
     /// # 示例
     /// ```no_run
-    /// # use kestrel_protocol_timer::TimerWheel;
+    /// # use kestrel_protocol_timer::{TimerWheel, TimerTask};
     /// # use std::time::Duration;
     /// # #[tokio::main]
     /// # async fn main() {
     /// let timer = TimerWheel::with_defaults();
-    /// let callbacks: Vec<_> = (0..10)
-    ///     .map(|_| (Duration::from_secs(1), || async {}))
-    ///     .collect();
-    /// let batch = timer.schedule_once_batch(callbacks).await;
+    /// let tasks = TimerWheel::create_batch(
+    ///     (0..10).map(|_| (Duration::from_secs(1), || async {})).collect()
+    /// );
+    /// let batch = timer.register_batch(tasks);
     /// 
     /// let cancelled = batch.cancel_all();
     /// println!("取消了 {} 个定时器", cancelled);
@@ -148,15 +146,15 @@ impl BatchHandle {
     ///
     /// # 示例
     /// ```no_run
-    /// # use kestrel_protocol_timer::TimerWheel;
+    /// # use kestrel_protocol_timer::{TimerWheel, TimerTask};
     /// # use std::time::Duration;
     /// # #[tokio::main]
     /// # async fn main() {
     /// let timer = TimerWheel::with_defaults();
-    /// let callbacks: Vec<_> = (0..3)
-    ///     .map(|_| (Duration::from_secs(1), || async {}))
-    ///     .collect();
-    /// let batch = timer.schedule_once_batch(callbacks).await;
+    /// let tasks = TimerWheel::create_batch(
+    ///     (0..3).map(|_| (Duration::from_secs(1), || async {})).collect()
+    /// );
+    /// let batch = timer.register_batch(tasks);
     /// 
     /// // 转换为独立的句柄
     /// let handles = batch.into_handles();
@@ -205,15 +203,15 @@ impl BatchHandle {
     ///
     /// # 示例
     /// ```no_run
-    /// # use kestrel_protocol_timer::TimerWheel;
+    /// # use kestrel_protocol_timer::{TimerWheel, TimerTask};
     /// # use std::time::Duration;
     /// # #[tokio::main]
     /// # async fn main() {
     /// let timer = TimerWheel::with_defaults();
-    /// let callbacks: Vec<_> = (0..3)
-    ///     .map(|_| (Duration::from_secs(1), || async {}))
-    ///     .collect();
-    /// let batch = timer.schedule_once_batch(callbacks).await;
+    /// let tasks = TimerWheel::create_batch(
+    ///     (0..3).map(|_| (Duration::from_secs(1), || async {})).collect()
+    /// );
+    /// let batch = timer.register_batch(tasks);
     /// 
     /// // 获取所有完成通知接收器
     /// let receivers = batch.into_completion_receivers();
@@ -235,15 +233,15 @@ impl BatchHandle {
 /// 
 /// # 示例
 /// ```no_run
-/// # use kestrel_protocol_timer::TimerWheel;
+/// # use kestrel_protocol_timer::{TimerWheel, TimerTask};
 /// # use std::time::Duration;
 /// # #[tokio::main]
 /// # async fn main() {
 /// let timer = TimerWheel::with_defaults();
-/// let callbacks: Vec<_> = (0..3)
-///     .map(|_| (Duration::from_secs(1), || async {}))
-///     .collect();
-/// let batch = timer.schedule_once_batch(callbacks).await;
+/// let tasks = TimerWheel::create_batch(
+///     (0..3).map(|_| (Duration::from_secs(1), || async {})).collect()
+/// );
+/// let batch = timer.register_batch(tasks);
 /// 
 /// // 直接迭代，每个元素都是独立的 TimerHandle
 /// for handle in batch {
@@ -313,7 +311,7 @@ impl TimerWheel {
     ///
     /// # 示例
     /// ```no_run
-    /// use kestrel_protocol_timer::{TimerWheel, WheelConfig};
+    /// use kestrel_protocol_timer::{TimerWheel, WheelConfig, TimerTask};
     /// use std::time::Duration;
     ///
     /// #[tokio::main]
@@ -324,6 +322,10 @@ impl TimerWheel {
     ///         .build()
     ///         .unwrap();
     ///     let timer = TimerWheel::new(config);
+    ///     
+    ///     // 使用两步式 API
+    ///     let task = TimerWheel::create_task(Duration::from_secs(1), || async {});
+    ///     let handle = timer.register(task);
     /// }
     /// ```
     pub fn new(config: WheelConfig) -> Self {
@@ -367,7 +369,7 @@ impl TimerWheel {
     ///
     /// # 示例
     /// ```no_run
-    /// use kestrel_protocol_timer::TimerWheel;
+    /// use kestrel_protocol_timer::{TimerWheel, TimerService};
     /// use std::time::Duration;
     ///
     /// #[tokio::main]
@@ -375,11 +377,11 @@ impl TimerWheel {
     ///     let timer = TimerWheel::with_defaults();
     ///     let mut service = timer.create_service();
     ///     
-    ///     // 直接通过 service 批量调度定时器
-    ///     let callbacks: Vec<_> = (0..5)
-    ///         .map(|_| (Duration::from_millis(100), || async {}))
-    ///         .collect();
-    ///     service.schedule_once_batch(callbacks).await;
+    ///     // 使用两步式 API 通过 service 批量调度定时器
+    ///     let tasks = TimerService::create_batch(
+    ///         (0..5).map(|_| (Duration::from_millis(100), || async {})).collect()
+    ///     );
+    ///     service.register_batch(tasks).await;
     ///     
     ///     // 接收超时通知
     ///     let mut rx = service.take_receiver().unwrap();
@@ -419,122 +421,68 @@ impl TimerWheel {
         crate::service::TimerService::new(self.wheel.clone(), config)
     }
 
-    /// 内部辅助方法：创建定时器句柄
+    /// 创建定时器任务（申请阶段）
     /// 
-    /// 由 TimerWheel 和 TimerService 共用
-    pub(crate) fn create_timer_handle_internal(
-        wheel: &Arc<Mutex<Wheel>>,
-        delay: Duration,
-        callback: Option<CallbackWrapper>,
-    ) -> TimerHandle {
-        let (completion_tx, completion_rx) = oneshot::channel();
-        let notifier = CompletionNotifier(completion_tx);
-        
-        let task = TimerTask::once(0, 0, callback, notifier);
-        
-        let task_id = {
-            let mut wheel_guard = wheel.lock();
-            wheel_guard.insert(delay, task)
-        };
-        
-        TimerHandle::new(task_id, wheel.clone(), completion_rx)
-    }
-
-    /// 内部辅助方法：创建批量定时器句柄
-    /// 
-    /// 由 TimerWheel 和 TimerService 共用
-    pub(crate) fn create_batch_handle_internal<C>(
-        wheel: &Arc<Mutex<Wheel>>,
-        callbacks: Vec<(Duration, C)>,
-    ) -> BatchHandle
-    where
-        C: TimerCallback,
-    {
-        use std::sync::Arc;
-        let mut completion_rxs = Vec::with_capacity(callbacks.len());
-        
-        let tasks: Vec<(Duration, TimerTask)> = callbacks
-            .into_iter()
-            .map(|(delay, callback)| {
-                let callback_wrapper = Arc::new(callback) as CallbackWrapper;
-                let (completion_tx, completion_rx) = oneshot::channel();
-                completion_rxs.push(completion_rx);
-                let notifier = CompletionNotifier(completion_tx);
-                let task = TimerTask::once(0, 0, Some(callback_wrapper), notifier);
-                (delay, task)
-            })
-            .collect();
-        
-        let task_ids = {
-            let mut wheel_guard = wheel.lock();
-            wheel_guard.insert_batch(tasks)
-        };
-        
-        BatchHandle::new(task_ids, wheel.clone(), completion_rxs)
-    }
-
-    /// 调度一次性定时器
-    ///
     /// # 参数
     /// - `delay`: 延迟时间
     /// - `callback`: 实现了 TimerCallback trait 的回调对象
-    ///
+    /// 
     /// # 返回
-    /// 返回定时器句柄，可用于取消定时器
-    ///
+    /// 返回 TimerTask，需要通过 `register()` 注册到时间轮
+    /// 
     /// # 示例
     /// ```no_run
-    /// use kestrel_protocol_timer::TimerWheel;
+    /// use kestrel_protocol_timer::{TimerWheel, TimerTask};
     /// use std::time::Duration;
-    /// use std::sync::Arc;
-    ///
+    /// 
     /// #[tokio::main]
     /// async fn main() {
     ///     let timer = TimerWheel::with_defaults();
     ///     
-    ///     let handle = timer.schedule_once(Duration::from_secs(1), || async {
+    ///     // 步骤 1: 创建任务
+    ///     let task = TimerWheel::create_task(Duration::from_secs(1), || async {
     ///         println!("Timer fired!");
-    ///     }).await;
+    ///     });
     ///     
-    ///     tokio::time::sleep(Duration::from_secs(2)).await;
+    ///     // 获取任务 ID
+    ///     let task_id = task.get_id();
+    ///     println!("Created task: {:?}", task_id);
+    ///     
+    ///     // 步骤 2: 注册任务
+    ///     let handle = timer.register(task);
     /// }
     /// ```
-    pub async fn schedule_once<C>(&self, delay: Duration, callback: C) -> TimerHandle
+    pub fn create_task<C>(delay: Duration, callback: C) -> crate::task::TimerTask
     where
         C: TimerCallback,
     {
         use std::sync::Arc;
         let callback_wrapper = Arc::new(callback) as CallbackWrapper;
-        Self::create_timer_handle_internal(&self.wheel, delay, Some(callback_wrapper))
+        crate::task::TimerTask::new(delay, Some(callback_wrapper))
     }
-
-    /// 批量调度一次性定时器
-    ///
+    
+    /// 批量创建定时器任务（申请阶段）
+    /// 
     /// # 参数
-    /// - `tasks`: (延迟时间, 回调) 的元组列表
-    ///
+    /// - `callbacks`: (延迟时间, 回调) 的元组列表
+    /// 
     /// # 返回
-    /// 返回批量定时器句柄
-    ///
-    /// # 性能优势
-    /// - 批量处理减少锁竞争
-    /// - 内部优化批量插入操作
-    /// - 共享 Wheel 引用减少内存开销
-    ///
+    /// 返回 TimerTask 列表，需要通过 `register_batch()` 注册到时间轮
+    /// 
     /// # 示例
     /// ```no_run
-    /// use kestrel_protocol_timer::TimerWheel;
+    /// use kestrel_protocol_timer::{TimerWheel, TimerTask};
     /// use std::time::Duration;
     /// use std::sync::Arc;
     /// use std::sync::atomic::{AtomicU32, Ordering};
-    ///
+    /// 
     /// #[tokio::main]
     /// async fn main() {
     ///     let timer = TimerWheel::with_defaults();
     ///     let counter = Arc::new(AtomicU32::new(0));
     ///     
-    ///     // 动态生成批量回调
-    ///     let callbacks: Vec<(Duration, _)> = (0..3)
+    ///     // 步骤 1: 批量创建任务
+    ///     let callbacks: Vec<_> = (0..3)
     ///         .map(|i| {
     ///             let counter = Arc::clone(&counter);
     ///             let delay = Duration::from_millis(100 + i * 100);
@@ -548,48 +496,149 @@ impl TimerWheel {
     ///         })
     ///         .collect();
     ///     
-    ///     let batch = timer.schedule_once_batch(callbacks).await;
-    ///     println!("Scheduled {} timers", batch.len());
+    ///     let tasks = TimerWheel::create_batch(callbacks);
+    ///     println!("Created {} tasks", tasks.len());
     ///     
-    ///     // 批量取消所有定时器
-    ///     let cancelled = batch.cancel_all();
-    ///     println!("Cancelled {} timers", cancelled);
+    ///     // 步骤 2: 批量注册任务
+    ///     let batch = timer.register_batch(tasks);
     /// }
     /// ```
-    pub async fn schedule_once_batch<C>(&self, callbacks: Vec<(Duration, C)>) -> BatchHandle
+    pub fn create_batch<C>(callbacks: Vec<(Duration, C)>) -> Vec<crate::task::TimerTask>
     where
         C: TimerCallback,
     {
-        Self::create_batch_handle_internal(&self.wheel, callbacks)
+        use std::sync::Arc;
+        callbacks
+            .into_iter()
+            .map(|(delay, callback)| {
+                let callback_wrapper = Arc::new(callback) as CallbackWrapper;
+                crate::task::TimerTask::new(delay, Some(callback_wrapper))
+            })
+            .collect()
     }
-
-
-    /// 调度一次性通知定时器（无回调，仅通知）
-    ///
+    
+    /// 注册定时器任务到时间轮（注册阶段）
+    /// 
     /// # 参数
-    /// - `delay`: 延迟时间
-    ///
+    /// - `task`: 通过 `create_task()` 创建的任务
+    /// 
     /// # 返回
-    /// 返回定时器句柄，可通过 `into_completion_receiver()` 获取通知接收器
-    ///
+    /// 返回定时器句柄，可用于取消定时器和接收完成通知
+    /// 
     /// # 示例
     /// ```no_run
-    /// use kestrel_protocol_timer::TimerWheel;
+    /// use kestrel_protocol_timer::{TimerWheel, TimerTask};
     /// use std::time::Duration;
-    ///
+    /// 
     /// #[tokio::main]
     /// async fn main() {
     ///     let timer = TimerWheel::with_defaults();
     ///     
-    ///     let handle = timer.schedule_once_notify(Duration::from_secs(1)).await;
+    ///     let task = TimerWheel::create_task(Duration::from_secs(1), || async {
+    ///         println!("Timer fired!");
+    ///     });
+    ///     let task_id = task.get_id();
     ///     
-    ///     // 获取完成通知接收器
+    ///     let handle = timer.register(task);
+    ///     
+    ///     // 等待定时器完成
     ///     handle.into_completion_receiver().0.await.ok();
-    ///     println!("Timer completed!");
     /// }
     /// ```
-    pub async fn schedule_once_notify(&self, delay: Duration) -> TimerHandle {
-        Self::create_timer_handle_internal(&self.wheel, delay, None)
+    pub fn register(&self, mut task: crate::task::TimerTask) -> TimerHandle {
+        let (completion_tx, completion_rx) = oneshot::channel();
+        let notifier = crate::task::CompletionNotifier(completion_tx);
+        
+        let delay = task.delay;
+        let task_id = task.id;
+        
+        // 准备注册：设置 completion_notifier 和时间轮相关参数
+        {
+            let wheel_guard = self.wheel.lock();
+            let ticks = wheel_guard.delay_to_ticks(delay);
+            let current_tick = wheel_guard.current_tick();
+            let total_ticks = current_tick + ticks;
+            let slot_count = wheel_guard.slot_count();
+            let rounds = (total_ticks / slot_count as u64)
+                .saturating_sub(current_tick / slot_count as u64) as u32;
+            
+            task.prepare_for_registration(notifier, total_ticks, rounds);
+        }
+        
+        // 插入任务到时间轮
+        {
+            let mut wheel_guard = self.wheel.lock();
+            wheel_guard.insert(delay, task);
+        }
+        
+        TimerHandle::new(task_id, self.wheel.clone(), completion_rx)
+    }
+    
+    /// 批量注册定时器任务到时间轮（注册阶段）
+    /// 
+    /// # 参数
+    /// - `tasks`: 通过 `create_batch()` 创建的任务列表
+    /// 
+    /// # 返回
+    /// 返回批量定时器句柄
+    /// 
+    /// # 示例
+    /// ```no_run
+    /// use kestrel_protocol_timer::{TimerWheel, TimerTask};
+    /// use std::time::Duration;
+    /// 
+    /// #[tokio::main]
+    /// async fn main() {
+    ///     let timer = TimerWheel::with_defaults();
+    ///     
+    ///     let callbacks: Vec<_> = (0..3)
+    ///         .map(|_| (Duration::from_secs(1), || async {}))
+    ///         .collect();
+    ///     let tasks = TimerWheel::create_batch(callbacks);
+    ///     
+    ///     let batch = timer.register_batch(tasks);
+    ///     println!("Registered {} timers", batch.len());
+    /// }
+    /// ```
+    pub fn register_batch(&self, tasks: Vec<crate::task::TimerTask>) -> BatchHandle {
+        let mut completion_rxs = Vec::with_capacity(tasks.len());
+        let mut task_ids = Vec::with_capacity(tasks.len());
+        
+        // 准备所有任务
+        let prepared_tasks: Vec<(Duration, crate::task::TimerTask)> = tasks
+            .into_iter()
+            .map(|mut task| {
+                let (completion_tx, completion_rx) = oneshot::channel();
+                let notifier = crate::task::CompletionNotifier(completion_tx);
+                completion_rxs.push(completion_rx);
+                
+                let delay = task.delay;
+                task_ids.push(task.id);
+                
+                // 准备注册
+                {
+                    let wheel_guard = self.wheel.lock();
+                    let ticks = wheel_guard.delay_to_ticks(delay);
+                    let current_tick = wheel_guard.current_tick();
+                    let total_ticks = current_tick + ticks;
+                    let slot_count = wheel_guard.slot_count();
+                    let rounds = (total_ticks / slot_count as u64)
+                        .saturating_sub(current_tick / slot_count as u64) as u32;
+                    
+                    task.prepare_for_registration(notifier, total_ticks, rounds);
+                }
+                
+                (delay, task)
+            })
+            .collect();
+        
+        // 批量插入到时间轮
+        {
+            let mut wheel_guard = self.wheel.lock();
+            wheel_guard.insert_batch(prepared_tasks);
+        }
+        
+        BatchHandle::new(task_ids, self.wheel.clone(), completion_rxs)
     }
 
     /// 取消定时器
@@ -599,6 +648,25 @@ impl TimerWheel {
     ///
     /// # 返回
     /// 如果任务存在且成功取消返回 true，否则返回 false
+    /// 
+    /// # 示例
+    /// ```no_run
+    /// use kestrel_protocol_timer::{TimerWheel, TimerTask};
+    /// use std::time::Duration;
+    ///
+    /// #[tokio::main]
+    /// async fn main() {
+    ///     let timer = TimerWheel::with_defaults();
+    ///     
+    ///     let task = TimerWheel::create_task(Duration::from_secs(10), || async {});
+    ///     let task_id = task.get_id();
+    ///     let _handle = timer.register(task);
+    ///     
+    ///     // 使用任务 ID 取消
+    ///     let cancelled = timer.cancel(task_id);
+    ///     println!("取消成功: {}", cancelled);
+    /// }
+    /// ```
     pub fn cancel(&self, task_id: TaskId) -> bool {
         let mut wheel = self.wheel.lock();
         wheel.cancel(task_id)
@@ -618,7 +686,7 @@ impl TimerWheel {
     ///
     /// # 示例
     /// ```no_run
-    /// use kestrel_protocol_timer::TimerWheel;
+    /// use kestrel_protocol_timer::{TimerWheel, TimerTask};
     /// use std::time::Duration;
     ///
     /// #[tokio::main]
@@ -626,12 +694,17 @@ impl TimerWheel {
     ///     let timer = TimerWheel::with_defaults();
     ///     
     ///     // 创建多个定时器
-    ///     let handle1 = timer.schedule_once(Duration::from_secs(10), || async {}).await;
-    ///     let handle2 = timer.schedule_once(Duration::from_secs(10), || async {}).await;
-    ///     let handle3 = timer.schedule_once(Duration::from_secs(10), || async {}).await;
+    ///     let task1 = TimerWheel::create_task(Duration::from_secs(10), || async {});
+    ///     let task2 = TimerWheel::create_task(Duration::from_secs(10), || async {});
+    ///     let task3 = TimerWheel::create_task(Duration::from_secs(10), || async {});
+    ///     
+    ///     let task_ids = vec![task1.get_id(), task2.get_id(), task3.get_id()];
+    ///     
+    ///     let _h1 = timer.register(task1);
+    ///     let _h2 = timer.register(task2);
+    ///     let _h3 = timer.register(task3);
     ///     
     ///     // 批量取消
-    ///     let task_ids = vec![handle1.task_id(), handle2.task_id(), handle3.task_id()];
     ///     let cancelled = timer.cancel_batch(&task_ids);
     ///     println!("已取消 {} 个定时器", cancelled);
     /// }
@@ -662,19 +735,22 @@ impl TimerWheel {
                 // 移动task的所有权来获取completion_notifier
                 let notifier = task.completion_notifier;
                 
-                // 在独立的 tokio 任务中执行回调，并在回调完成后发送通知
-                if let Some(callback) = callback {
-                    tokio::spawn(async move {
-                        // 执行回调
-                        let future = callback.call();
-                        future.await;
-                        
-                        // 回调执行完成后发送通知
+                // 只有注册过的任务才有 notifier
+                if let Some(notifier) = notifier {
+                    // 在独立的 tokio 任务中执行回调，并在回调完成后发送通知
+                    if let Some(callback) = callback {
+                        tokio::spawn(async move {
+                            // 执行回调
+                            let future = callback.call();
+                            future.await;
+                            
+                            // 回调执行完成后发送通知
+                            let _ = notifier.0.send(());
+                        });
+                    } else {
+                        // 如果没有回调，立即发送完成通知
                         let _ = notifier.0.send(());
-                    });
-                } else {
-                    // 如果没有回调，立即发送完成通知
-                    let _ = notifier.0.send(());
+                    }
                 }
             }
         }
@@ -714,7 +790,7 @@ mod tests {
         let counter = Arc::new(AtomicU32::new(0));
         let counter_clone = Arc::clone(&counter);
 
-        let _handle = timer.schedule_once(
+        let task = TimerWheel::create_task(
             Duration::from_millis(50),
             move || {
                 let counter = Arc::clone(&counter_clone);
@@ -722,7 +798,8 @@ mod tests {
                     counter.fetch_add(1, Ordering::SeqCst);
                 }
             },
-        ).await;
+        );
+        let _handle = timer.register(task);
 
         // 等待定时器触发
         tokio::time::sleep(Duration::from_millis(100)).await;
@@ -736,7 +813,7 @@ mod tests {
         let counter = Arc::new(AtomicU32::new(0));
         let counter_clone = Arc::clone(&counter);
 
-        let handle = timer.schedule_once(
+        let task = TimerWheel::create_task(
             Duration::from_millis(100),
             move || {
                 let counter = Arc::clone(&counter_clone);
@@ -744,7 +821,8 @@ mod tests {
                     counter.fetch_add(1, Ordering::SeqCst);
                 }
             },
-        ).await;
+        );
+        let handle = timer.register(task);
 
         // 立即取消
         let cancel_result = handle.cancel();
@@ -762,7 +840,7 @@ mod tests {
         let counter = Arc::new(AtomicU32::new(0));
         let counter_clone = Arc::clone(&counter);
 
-        let handle = timer.schedule_once(
+        let task = TimerWheel::create_task(
             Duration::from_millis(100),
             move || {
                 let counter = Arc::clone(&counter_clone);
@@ -770,7 +848,8 @@ mod tests {
                     counter.fetch_add(1, Ordering::SeqCst);
                 }
             },
-        ).await;
+        );
+        let handle = timer.register(task);
 
         // 立即取消
         let cancel_result = handle.cancel();
