@@ -1,4 +1,4 @@
-use crate::error::TimerError;
+use crate::config::{BatchConfig, WheelConfig};
 use crate::task::{TaskId, TaskLocation, TimerTask};
 use rustc_hash::FxHashMap;
 use std::time::Duration;
@@ -20,45 +20,58 @@ pub struct Wheel {
     
     /// 任务索引，用于快速查找和取消任务
     task_index: FxHashMap<TaskId, TaskLocation>,
+    
+    /// 批处理配置
+    batch_config: BatchConfig,
 }
 
 impl Wheel {
     /// 创建新的时间轮
     ///
     /// # 参数
-    /// - `tick_duration`: 每个 tick 的时间长度
-    /// - `slot_count`: 槽位数量（必须是 2 的幂次方以优化取模运算）
+    /// - `config`: 时间轮配置（已经过验证）
     ///
-    /// # 返回
-    /// - `Ok(Self)`: 成功创建时间轮
-    /// - `Err(TimerError)`: 槽位数量无效
-    pub fn new(tick_duration: Duration, slot_count: usize) -> Result<Self, TimerError> {
-        if slot_count == 0 {
-            return Err(TimerError::InvalidSlotCount {
-                slot_count,
-                reason: "槽位数量必须大于 0",
-            });
-        }
-        
-        if !slot_count.is_power_of_two() {
-            return Err(TimerError::InvalidSlotCount {
-                slot_count,
-                reason: "槽位数量必须是 2 的幂次方",
-            });
-        }
-
+    /// # 注意
+    /// 配置参数已在 WheelConfig::builder().build() 中验证，
+    /// 因此此方法不会失败。
+    pub fn new(config: WheelConfig) -> Self {
+        let slot_count = config.slot_count;
         let mut slots = Vec::with_capacity(slot_count);
         for _ in 0..slot_count {
             slots.push(Vec::new());
         }
 
-        Ok(Self {
+        Self {
             slots,
             current_tick: 0,
             slot_count,
-            tick_duration,
+            tick_duration: config.tick_duration,
             task_index: FxHashMap::default(),
-        })
+            batch_config: BatchConfig::default(),
+        }
+    }
+    
+    /// 创建带批处理配置的时间轮
+    ///
+    /// # 参数
+    /// - `config`: 时间轮配置（已经过验证）
+    /// - `batch_config`: 批处理配置
+    #[allow(dead_code)]
+    pub fn with_batch_config(config: WheelConfig, batch_config: BatchConfig) -> Self {
+        let slot_count = config.slot_count;
+        let mut slots = Vec::with_capacity(slot_count);
+        for _ in 0..slot_count {
+            slots.push(Vec::new());
+        }
+
+        Self {
+            slots,
+            current_tick: 0,
+            slot_count,
+            tick_duration: config.tick_duration,
+            task_index: FxHashMap::default(),
+            batch_config,
+        }
     }
 
     /// 获取当前 tick
@@ -208,12 +221,12 @@ impl Wheel {
     /// - 减少重复的 HashMap 查找开销
     /// - 对同一槽位的多个取消操作可以批量处理
     /// - 使用不稳定排序提升性能
-    /// - 小批量（≤10）跳过排序，直接处理
+    /// - 小批量优化：根据配置阈值跳过排序，直接处理
     pub fn cancel_batch(&mut self, task_ids: &[TaskId]) -> usize {
         let mut cancelled_count = 0;
         
         // 小批量优化：直接逐个取消，避免分组和排序的开销
-        if task_ids.len() <= 10 {
+        if task_ids.len() <= self.batch_config.small_batch_threshold {
             for &task_id in task_ids {
                 if self.cancel(task_id) {
                     cancelled_count += 1;
@@ -333,7 +346,7 @@ mod tests {
 
     #[test]
     fn test_wheel_creation() {
-        let wheel = Wheel::new(Duration::from_millis(10), 512).unwrap();
+        let wheel = Wheel::new(WheelConfig::default());
         assert_eq!(wheel.slot_count(), 512);
         assert_eq!(wheel.current_tick(), 0);
         assert!(wheel.is_empty());
@@ -341,7 +354,7 @@ mod tests {
 
     #[test]
     fn test_delay_to_ticks() {
-        let wheel = Wheel::new(Duration::from_millis(10), 512).unwrap();
+        let wheel = Wheel::new(WheelConfig::default());
         assert_eq!(wheel.delay_to_ticks(Duration::from_millis(100)), 10);
         assert_eq!(wheel.delay_to_ticks(Duration::from_millis(50)), 5);
         assert_eq!(wheel.delay_to_ticks(Duration::from_millis(1)), 1); // 最小 1 tick
@@ -349,9 +362,11 @@ mod tests {
 
     #[test]
     fn test_wheel_invalid_slot_count() {
-        let result = Wheel::new(Duration::from_millis(10), 100);
+        let result = WheelConfig::builder()
+            .slot_count(100)
+            .build();
         assert!(result.is_err());
-        if let Err(TimerError::InvalidSlotCount { slot_count, reason }) = result {
+        if let Err(crate::error::TimerError::InvalidSlotCount { slot_count, reason }) = result {
             assert_eq!(slot_count, 100);
             assert_eq!(reason, "槽位数量必须是 2 的幂次方");
         } else {
@@ -364,7 +379,7 @@ mod tests {
         use std::sync::Arc;
         use crate::task::{TimerTask, CompletionNotifier};
         
-        let mut wheel = Wheel::new(Duration::from_millis(10), 512).unwrap();
+        let mut wheel = Wheel::new(WheelConfig::default());
         
         // 创建批量任务
         let tasks: Vec<(Duration, TimerTask)> = (0..10)
@@ -388,7 +403,7 @@ mod tests {
         use std::sync::Arc;
         use crate::task::{TimerTask, CompletionNotifier};
         
-        let mut wheel = Wheel::new(Duration::from_millis(10), 512).unwrap();
+        let mut wheel = Wheel::new(WheelConfig::default());
         
         // 插入多个任务
         let mut task_ids = Vec::new();
@@ -426,7 +441,7 @@ mod tests {
         use std::sync::Arc;
         use crate::task::{TimerTask, CompletionNotifier};
         
-        let mut wheel = Wheel::new(Duration::from_millis(10), 512).unwrap();
+        let mut wheel = Wheel::new(WheelConfig::default());
         
         // 插入多个相同延迟的任务（会进入同一个槽位）
         let mut task_ids = Vec::new();

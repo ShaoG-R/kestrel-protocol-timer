@@ -9,6 +9,12 @@ pub enum TimerError {
         reason: &'static str,
     },
     
+    /// 配置验证失败
+    InvalidConfiguration {
+        field: String,
+        reason: String,
+    },
+    
     /// 内部通信通道已关闭
     ChannelClosed,
 }
@@ -18,6 +24,9 @@ impl fmt::Display for TimerError {
         match self {
             TimerError::InvalidSlotCount { slot_count, reason } => {
                 write!(f, "无效的槽位数量 {}: {}", slot_count, reason)
+            }
+            TimerError::InvalidConfiguration { field, reason } => {
+                write!(f, "配置验证失败 ({}): {}", field, reason)
             }
             TimerError::ChannelClosed => {
                 write!(f, "内部通信通道已关闭")

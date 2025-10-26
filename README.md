@@ -89,20 +89,19 @@ use kestrel_protocol_timer::TimerWheel;
 use std::time::Duration;
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+async fn main() {
     // 创建定时器（使用默认配置）
-    let timer = TimerWheel::with_defaults()?;
+    let timer = TimerWheel::with_defaults();
     
     // 调度一个 1 秒后触发的定时器
     let handle = timer.schedule_once(Duration::from_secs(1), || async {
         println!("定时器触发！");
-    }).await?;
+    }).await;
     
     // 等待定时器完成
     handle.into_completion_receiver().0.await.ok();
     
     println!("定时器执行完成");
-    Ok(())
 }
 ```
 
@@ -255,19 +254,20 @@ pub struct TimerTask {
 #### 创建定时器
 
 ```rust
-use kestrel_protocol_timer::TimerWheel;
+use kestrel_protocol_timer::{TimerWheel, WheelConfig};
 use std::time::Duration;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 使用默认配置（512 槽位，10ms tick）
-    let timer = TimerWheel::with_defaults()?;
+    let timer = TimerWheel::with_defaults();
     
     // 或使用自定义配置
-    let timer = TimerWheel::new(
-        Duration::from_millis(10),  // tick 时长
-        512,                         // 槽位数量
-    )?;
+    let config = WheelConfig::builder()
+        .tick_duration(Duration::from_millis(10))  // tick 时长
+        .slot_count(512)                            // 槽位数量
+        .build()?;
+    let timer = TimerWheel::new(config);
     
     Ok(())
 }
@@ -279,7 +279,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 
-let timer = TimerWheel::with_defaults()?;
+let timer = TimerWheel::with_defaults();
 let counter = Arc::new(AtomicU32::new(0));
 let counter_clone = Arc::clone(&counter);
 
@@ -293,7 +293,7 @@ let handle = timer.schedule_once(
             println!("定时器触发！");
         }
     },
-).await?;
+).await;
 
 // 等待定时器完成
 handle.into_completion_receiver().0.await.ok();
@@ -302,14 +302,14 @@ handle.into_completion_receiver().0.await.ok();
 #### 取消定时器
 
 ```rust
-let timer = TimerWheel::with_defaults()?;
+let timer = TimerWheel::with_defaults();
 
 let handle = timer.schedule_once(
     Duration::from_secs(10),
     || async {
         println!("这条消息不会被打印");
     },
-).await?;
+).await;
 
 // 取消定时器
 let cancelled = handle.cancel();
@@ -321,7 +321,7 @@ println!("取消成功: {}", cancelled);
 #### 批量调度定时器
 
 ```rust
-let timer = TimerWheel::with_defaults()?;
+let timer = TimerWheel::with_defaults();
 let counter = Arc::new(AtomicU32::new(0));
 
 // 创建 100 个定时器回调
@@ -340,7 +340,7 @@ let callbacks: Vec<_> = (0..100)
     .collect();
 
 // 批量调度
-let batch_handle = timer.schedule_once_batch(callbacks).await?;
+let batch_handle = timer.schedule_once_batch(callbacks).await;
 
 println!("已调度 {} 个定时器", batch_handle.len());
 ```
@@ -348,14 +348,14 @@ println!("已调度 {} 个定时器", batch_handle.len());
 #### 批量取消定时器
 
 ```rust
-let timer = TimerWheel::with_defaults()?;
+let timer = TimerWheel::with_defaults();
 
 // 创建批量定时器
 let callbacks: Vec<_> = (0..50)
     .map(|_| (Duration::from_secs(10), || async {}))
     .collect();
 
-let batch_handle = timer.schedule_once_batch(callbacks).await?;
+let batch_handle = timer.schedule_once_batch(callbacks).await;
 
 // 批量取消
 let cancelled_count = batch_handle.cancel_all();
@@ -367,14 +367,14 @@ println!("已取消 {} 个定时器", cancelled_count);
 #### 等待单个定时器完成
 
 ```rust
-let timer = TimerWheel::with_defaults()?;
+let timer = TimerWheel::with_defaults();
 
 let handle = timer.schedule_once(
     Duration::from_millis(100),
     || async {
         println!("定时器触发");
     },
-).await?;
+).await;
 
 // 等待定时器完成
 match handle.into_completion_receiver().0.await {
@@ -386,7 +386,7 @@ match handle.into_completion_receiver().0.await {
 #### 批量完成通知
 
 ```rust
-let timer = TimerWheel::with_defaults()?;
+let timer = TimerWheel::with_defaults();
 let counter = Arc::new(AtomicU32::new(0));
 
 // 创建批量定时器
@@ -404,7 +404,7 @@ let callbacks: Vec<_> = (0..10)
     })
     .collect();
 
-let batch_handle = timer.schedule_once_batch(callbacks).await?;
+let batch_handle = timer.schedule_once_batch(callbacks).await;
 
 // 获取所有完成通知接收器
 let receivers = batch_handle.into_completion_receivers();
@@ -421,10 +421,10 @@ println!("所有定时器已完成，共触发 {} 次", counter.load(Ordering::S
 #### 仅通知的定时器（无回调）
 
 ```rust
-let timer = TimerWheel::with_defaults()?;
+let timer = TimerWheel::with_defaults();
 
 // 调度一个仅发送通知的定时器（无回调函数）
-let handle = timer.schedule_once_notify(Duration::from_millis(100)).await?;
+let handle = timer.schedule_once_notify(Duration::from_millis(100)).await;
 
 // 等待通知
 handle.into_completion_receiver().0.await.ok();
@@ -440,7 +440,7 @@ println!("定时器到期");
 ```rust
 use kestrel_protocol_timer::{TimerWheel, TimerService};
 
-let timer = TimerWheel::with_defaults()?;
+let timer = TimerWheel::with_defaults();
 let mut service = timer.create_service();
 
 // 通过 service 调度定时器
@@ -449,7 +449,7 @@ let task_id = service.schedule_once(
     || async {
         println!("通过 service 调度的定时器触发");
     }
-).await?;
+).await;
 
 println!("已调度任务 ID: {:?}", task_id);
 ```
@@ -457,7 +457,7 @@ println!("已调度任务 ID: {:?}", task_id);
 #### 批量调度并接收超时通知
 
 ```rust
-let timer = TimerWheel::with_defaults()?;
+let timer = TimerWheel::with_defaults();
 let mut service = timer.create_service();
 
 // 批量调度定时器
@@ -465,7 +465,7 @@ let callbacks: Vec<_> = (0..100)
     .map(|_| (Duration::from_millis(100), || async {}))
     .collect();
 
-let task_ids = service.schedule_once_batch(callbacks).await?;
+let task_ids = service.schedule_once_batch(callbacks).await;
 println!("已调度 {} 个任务", task_ids.len());
 
 // 获取超时通知接收器
@@ -487,28 +487,31 @@ while let Some(task_id) = timeout_rx.recv().await {
 service.shutdown().await;
 ```
 
-#### 动态添加和取消任务
+#### 动态取消任务
 
 ```rust
-let timer = TimerWheel::with_defaults()?;
-let mut service = timer.create_service();
+let timer = TimerWheel::with_defaults();
+let service = timer.create_service();
 
-// 通过 TimerWheel 直接调度
-let handle = timer.schedule_once(
+// 通过 service 直接调度定时器
+let task_id1 = service.schedule_once(
     Duration::from_secs(5),
     || async { println!("任务 1 触发"); }
-).await?;
+).await;
 
-// 将句柄添加到 service 管理
-service.add_handle(handle).await?;
-
-// 直接取消并通知 service
 let task_id2 = service.schedule_once(
     Duration::from_secs(10),
     || async { println!("任务 2 触发"); }
-).await?;
+).await;
 
-service.cancel_and_notify(vec![task_id2]).await?;
+// 取消任务
+let cancelled = service.cancel_task(task_id2).await;
+println!("任务 2 取消结果: {}", cancelled);
+
+// 批量取消
+let task_ids = vec![task_id1];
+let cancelled_count = service.cancel_batch(&task_ids).await;
+println!("批量取消了 {} 个任务", cancelled_count);
 ```
 
 ## API 文档
@@ -517,31 +520,34 @@ service.cancel_and_notify(vec![task_id2]).await?;
 
 #### 构造方法
 
-**`TimerWheel::with_defaults() -> Result<Self, TimerError>`**
+**`TimerWheel::with_defaults() -> Self`**
 
 使用默认配置创建定时器：
 - 槽位数量：512
 - tick 时长：10ms
 
 ```rust
-let timer = TimerWheel::with_defaults()?;
+let timer = TimerWheel::with_defaults();
 ```
 
-**`TimerWheel::new(tick_duration: Duration, slot_count: usize) -> Result<Self, TimerError>`**
+**`TimerWheel::new(config: WheelConfig) -> Self`**
 
 使用自定义配置创建定时器。
 
 参数：
-- `tick_duration`：每个 tick 的时间长度
-- `slot_count`：槽位数量（必须是 2 的幂次方）
+- `config`：时间轮配置（通过 WheelConfigBuilder 构建并验证）
 
 ```rust
-let timer = TimerWheel::new(Duration::from_millis(5), 1024)?;
+let config = WheelConfig::builder()
+    .tick_duration(Duration::from_millis(5))
+    .slot_count(1024)
+    .build()?;
+let timer = TimerWheel::new(config);
 ```
 
 #### 调度方法
 
-**`schedule_once<F, Fut>(&self, delay: Duration, callback: F) -> Result<TimerHandle, TimerError>`**
+**`async fn schedule_once<F, Fut>(&self, delay: Duration, callback: F) -> TimerHandle`**
 
 调度一个单次执行的定时器。
 
@@ -555,19 +561,19 @@ let timer = TimerWheel::new(Duration::from_millis(5), 1024)?;
 ```rust
 let handle = timer.schedule_once(Duration::from_secs(1), || async {
     println!("1 秒后执行");
-}).await?;
+}).await;
 ```
 
-**`schedule_once_notify(&self, delay: Duration) -> Result<TimerHandle, TimerError>`**
+**`async fn schedule_once_notify(&self, delay: Duration) -> TimerHandle`**
 
 调度一个仅发送通知的定时器（无回调函数）。
 
 ```rust
-let handle = timer.schedule_once_notify(Duration::from_secs(1)).await?;
+let handle = timer.schedule_once_notify(Duration::from_secs(1)).await;
 handle.into_completion_receiver().0.await.ok();
 ```
 
-**`schedule_once_batch<F, Fut>(&self, callbacks: Vec<(Duration, F)>) -> Result<BatchHandle, TimerError>`**
+**`async fn schedule_once_batch<F, Fut>(&self, callbacks: Vec<(Duration, F)>) -> BatchHandle`**
 
 批量调度多个定时器。
 
@@ -582,7 +588,7 @@ let callbacks = vec![
     (Duration::from_secs(1), || async { println!("1"); }),
     (Duration::from_secs(2), || async { println!("2"); }),
 ];
-let batch = timer.schedule_once_batch(callbacks).await?;
+let batch = timer.schedule_once_batch(callbacks).await;
 ```
 
 #### 服务方法
@@ -659,17 +665,17 @@ for rx in receivers {
 
 ### TimerService
 
-**`schedule_once<F, Fut>(&self, delay: Duration, callback: F) -> Result<TaskId, TimerError>`**
+**`async fn schedule_once<F, Fut>(&self, delay: Duration, callback: F) -> TaskId`**
 
 通过服务调度单个定时器。
 
 返回：任务 ID
 
 ```rust
-let task_id = service.schedule_once(Duration::from_secs(1), || async {}).await?;
+let task_id = service.schedule_once(Duration::from_secs(1), || async {}).await;
 ```
 
-**`schedule_once_batch<F, Fut>(&self, callbacks: Vec<(Duration, F)>) -> Result<Vec<TaskId>, TimerError>`**
+**`async fn schedule_once_batch<F, Fut>(&self, callbacks: Vec<(Duration, F)>) -> Vec<TaskId>`**
 
 通过服务批量调度定时器。
 
@@ -677,7 +683,7 @@ let task_id = service.schedule_once(Duration::from_secs(1), || async {}).await?;
 
 ```rust
 let callbacks = vec![(Duration::from_secs(1), || async {})];
-let task_ids = service.schedule_once_batch(callbacks).await?;
+let task_ids = service.schedule_once_batch(callbacks).await;
 ```
 
 **`take_receiver(&mut self) -> Option<mpsc::Receiver<TaskId>>`**
@@ -691,12 +697,24 @@ while let Some(task_id) = rx.recv().await {
 }
 ```
 
-**`cancel_and_notify(&self, task_ids: Vec<TaskId>) -> Result<(), TimerError>`**
+**`async fn cancel_task(&self, task_id: TaskId) -> bool`**
 
-取消指定的任务并通知 service 清理。
+取消指定的任务。
+
+返回：是否成功取消
 
 ```rust
-service.cancel_and_notify(vec![task_id1, task_id2]).await?;
+let cancelled = service.cancel_task(task_id).await;
+```
+
+**`async fn cancel_batch(&self, task_ids: &[TaskId]) -> usize`**
+
+批量取消任务。
+
+返回：成功取消的任务数量
+
+```rust
+let cancelled_count = service.cancel_batch(&task_ids).await;
 ```
 
 **`shutdown(self) -> ()`**
@@ -742,22 +760,21 @@ Tick 时长决定了定时器的精度和时间轮推进的频率。
 
 ```rust
 // 高精度、大规模场景
-let timer = TimerWheel::new(
-    Duration::from_millis(5),   // 5ms 精度
-    2048,                        // 2048 槽位，覆盖约 10 秒
-)?;
+let config = WheelConfig::builder()
+    .tick_duration(Duration::from_millis(5))   // 5ms 精度
+    .slot_count(2048)                           // 2048 槽位，覆盖约 10 秒
+    .build()?;
+let timer = TimerWheel::new(config);
 
-// 一般场景
-let timer = TimerWheel::new(
-    Duration::from_millis(10),  // 10ms 精度
-    512,                         // 512 槽位，覆盖约 5 秒
-)?;
+// 一般场景（使用默认配置）
+let timer = TimerWheel::with_defaults();  // 10ms 精度，512 槽位，覆盖约 5 秒
 
 // 低精度、长时间场景
-let timer = TimerWheel::new(
-    Duration::from_millis(100), // 100ms 精度
-    1024,                        // 1024 槽位，覆盖约 102 秒
-)?;
+let config = WheelConfig::builder()
+    .tick_duration(Duration::from_millis(100)) // 100ms 精度
+    .slot_count(1024)                           // 1024 槽位，覆盖约 102 秒
+    .build()?;
+let timer = TimerWheel::new(config);
 ```
 
 ## 性能基准
@@ -922,7 +939,7 @@ async fn handle_connection(timer: &TimerWheel, conn_id: u64) {
             println!("连接 {} 超时，关闭连接", conn_id);
             // 关闭连接逻辑
         }
-    ).await.unwrap();
+    ).await;
     
     // 如果连接完成，取消超时
     // timeout_handle.cancel();
@@ -938,13 +955,17 @@ timer.schedule_once(
     || async {
         cleanup_temporary_files().await;
     }
-).await?;
+).await;
 ```
 
 ### 3. 心跳检测
 
 ```rust
-let timer = TimerWheel::new(Duration::from_secs(1), 512)?;
+let config = WheelConfig::builder()
+    .tick_duration(Duration::from_secs(1))
+    .slot_count(512)
+    .build()?;
+let timer = TimerWheel::new(config);
 let mut service = timer.create_service();
 
 // 为每个客户端设置心跳检测
@@ -955,7 +976,7 @@ for client_id in client_ids {
             println!("客户端 {} 心跳超时", client_id);
             disconnect_client(client_id).await;
         }
-    ).await?;
+    ).await;
 }
 
 // 统一处理超时
@@ -1015,7 +1036,7 @@ let callbacks: Vec<_> = tasks.into_iter()
     })
     .collect();
 
-timer.schedule_once_batch(callbacks).await?;
+timer.schedule_once_batch(callbacks).await;
 ```
 
 ### 6. 游戏服务器 Buff 系统
@@ -1027,15 +1048,13 @@ async fn apply_buff(
     player_id: u64,
     buff_type: BuffType,
     duration: Duration
-) -> Result<(), TimerError> {
+) {
     println!("玩家 {} 获得 buff: {:?}", player_id, buff_type);
     
     timer.schedule_once(duration, move || async move {
         println!("玩家 {} 的 buff {:?} 已失效", player_id, buff_type);
         remove_buff(player_id, buff_type).await;
-    }).await?;
-    
-    Ok(())
+    }).await;
 }
 ```
 

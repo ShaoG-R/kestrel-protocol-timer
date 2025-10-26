@@ -17,7 +17,7 @@ fn bench_schedule_single(c: &mut Criterion) {
             
             for _ in 0..iters {
                 // 准备阶段：创建 timer 和 service（不计入测量）
-                let timer = TimerWheel::with_defaults().unwrap();
+                let timer = TimerWheel::with_defaults();
                 let service = timer.create_service();
                 
                 // 测量阶段：只测量 schedule_once 的性能
@@ -27,7 +27,7 @@ fn bench_schedule_single(c: &mut Criterion) {
                     service.schedule_once(
                         Duration::from_secs(10),
                         || async {}
-                    ).await.unwrap()
+                    ).await
                 );
                 
                 total_duration += start.elapsed();
@@ -54,7 +54,7 @@ fn bench_schedule_batch(c: &mut Criterion) {
                 
                 for _ in 0..iters {
                     // 准备阶段：创建 timer 和 service（不计入测量）
-                    let timer = TimerWheel::with_defaults().unwrap();
+                    let timer = TimerWheel::with_defaults();
                     let service = timer.create_service();
                     
                     let callbacks: Vec<_> = (0..size)
@@ -65,7 +65,7 @@ fn bench_schedule_batch(c: &mut Criterion) {
                     let start = std::time::Instant::now();
                     
                     let task_ids = black_box(
-                        service.schedule_once_batch(callbacks).await.unwrap()
+                        service.schedule_once_batch(callbacks).await
                     );
                     
                     total_duration += start.elapsed();
@@ -92,19 +92,19 @@ fn bench_cancel_single(c: &mut Criterion) {
             
             for _ in 0..iters {
                 // 准备阶段：创建 timer、service 和调度任务（不计入测量）
-                let timer = TimerWheel::with_defaults().unwrap();
+                let timer = TimerWheel::with_defaults();
                 let service = timer.create_service();
                 
                 let task_id = service.schedule_once(
                     Duration::from_secs(10),
                     || async {}
-                ).await.unwrap();
+                ).await;
                 
                 // 测量阶段：只测量 cancel_task 的性能
                 let start = std::time::Instant::now();
                 
                 let result = black_box(
-                    service.cancel_task(task_id).await.unwrap()
+                    service.cancel_task(task_id).await
                 );
                 
                 total_duration += start.elapsed();
@@ -131,13 +131,13 @@ fn bench_cancel_batch(c: &mut Criterion) {
                 
                 for _ in 0..iters {
                     // 准备阶段：创建 timer、service 和调度任务（不计入测量）
-                    let timer = TimerWheel::with_defaults().unwrap();
+                    let timer = TimerWheel::with_defaults();
                     let service = timer.create_service();
                     
                     let callbacks: Vec<_> = (0..size)
                         .map(|_| (Duration::from_secs(10), || async {}))
                         .collect();
-                    let task_ids = service.schedule_once_batch(callbacks).await.unwrap();
+                    let task_ids = service.schedule_once_batch(callbacks).await;
                     
                     // 测量阶段：只测量 cancel_batch 的性能
                     let start = std::time::Instant::now();
@@ -171,7 +171,7 @@ fn bench_concurrent_schedule(c: &mut Criterion) {
                 
                 for _ in 0..iters {
                     // 准备阶段：创建 timer 和 service（不计入测量）
-                    let timer = TimerWheel::with_defaults().unwrap();
+                    let timer = TimerWheel::with_defaults();
                     let service = timer.create_service();
                     
                     // 测量阶段：只测量并发调度的性能
@@ -215,13 +215,13 @@ fn bench_high_frequency_cancel(c: &mut Criterion) {
             
             for _ in 0..iters {
                 // 准备阶段：创建 timer、service 和调度任务（不计入测量）
-                let timer = TimerWheel::with_defaults().unwrap();
+                let timer = TimerWheel::with_defaults();
                 let service = timer.create_service();
                 
                 let callbacks: Vec<_> = (0..1000)
                     .map(|_| (Duration::from_secs(10), || async {}))
                     .collect();
-                let task_ids = service.schedule_once_batch(callbacks).await.unwrap();
+                        let task_ids = service.schedule_once_batch(callbacks).await;
                 
                 // 测量阶段：只测量 cancel_batch 的性能
                 let start = std::time::Instant::now();
@@ -253,7 +253,7 @@ fn bench_mixed_operations(c: &mut Criterion) {
             
             for _ in 0..iters {
                 // 准备阶段：创建 timer 和 service（不计入测量）
-                let timer = TimerWheel::with_defaults().unwrap();
+                let timer = TimerWheel::with_defaults();
                 let service = timer.create_service();
                 
                 // 测量阶段：测量混合操作的性能
@@ -265,7 +265,7 @@ fn bench_mixed_operations(c: &mut Criterion) {
                     let callbacks: Vec<_> = (0..10)
                         .map(|_| (Duration::from_secs(10), || async {}))
                         .collect();
-                    let task_ids = service.schedule_once_batch(callbacks).await.unwrap();
+                    let task_ids = service.schedule_once_batch(callbacks).await;
                     
                     // 使用批量取消前5个任务
                     let to_cancel: Vec<_> = task_ids.iter().take(5).copied().collect();
@@ -296,14 +296,14 @@ fn bench_schedule_notify(c: &mut Criterion) {
             
             for _ in 0..iters {
                 // 准备阶段：创建 timer 和 service（不计入测量）
-                let timer = TimerWheel::with_defaults().unwrap();
+                let timer = TimerWheel::with_defaults();
                 let service = timer.create_service();
                 
                 // 测量阶段：只测量 schedule_once_notify 的性能
                 let start = std::time::Instant::now();
                 
                 let task_id = black_box(
-                    service.schedule_once_notify(Duration::from_secs(10)).await.unwrap()
+                    service.schedule_once_notify(Duration::from_secs(10)).await
                 );
                 
                 total_duration += start.elapsed();
@@ -323,7 +323,7 @@ fn bench_schedule_notify(c: &mut Criterion) {
                 
                 for _ in 0..iters {
                     // 准备阶段：创建 timer 和 service（不计入测量）
-                    let timer = TimerWheel::with_defaults().unwrap();
+                    let timer = TimerWheel::with_defaults();
                     let service = timer.create_service();
                     
                     // 测量阶段：测量批量通知调度的性能
@@ -331,7 +331,7 @@ fn bench_schedule_notify(c: &mut Criterion) {
                     
                     let mut task_ids = Vec::new();
                     for _ in 0..size {
-                        let task_id = service.schedule_once_notify(Duration::from_secs(10)).await.unwrap();
+                        let task_id = service.schedule_once_notify(Duration::from_secs(10)).await;
                         task_ids.push(task_id);
                     }
                     
@@ -359,7 +359,7 @@ fn bench_schedule_with_callback(c: &mut Criterion) {
             
             for _ in 0..iters {
                 // 准备阶段：创建 timer、service 和 counter（不计入测量）
-                let timer = TimerWheel::with_defaults().unwrap();
+                let timer = TimerWheel::with_defaults();
                 let service = timer.create_service();
                 let counter = Arc::new(AtomicU32::new(0));
                 
@@ -376,7 +376,7 @@ fn bench_schedule_with_callback(c: &mut Criterion) {
                                 counter.fetch_add(1, Ordering::SeqCst);
                             }
                         }
-                    ).await.unwrap()
+                    ).await
                 );
                 
                 total_duration += start.elapsed();

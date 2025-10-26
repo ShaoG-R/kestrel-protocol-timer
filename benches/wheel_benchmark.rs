@@ -15,13 +15,13 @@ fn bench_wheel_insert(c: &mut Criterion) {
             
             for _ in 0..iters {
                 // 准备阶段：创建 timer（不计入测量）
-                let timer = TimerWheel::with_defaults().unwrap();
+                let timer = TimerWheel::with_defaults();
                 
                 // 测量阶段：只测量插入操作的性能
                 let start = std::time::Instant::now();
                 
                 let _handle = black_box(
-                    timer.schedule_once(Duration::from_millis(100), || async {}).await.unwrap()
+                    timer.schedule_once(Duration::from_millis(100), || async {}).await
                 );
                 
                 total_duration += start.elapsed();
@@ -47,7 +47,7 @@ fn bench_wheel_insert_batch(c: &mut Criterion) {
                 
                 for _ in 0..iters {
                     // 准备阶段：创建 timer 和 tasks（不计入测量）
-                    let timer = TimerWheel::with_defaults().unwrap();
+                    let timer = TimerWheel::with_defaults();
                     
                     let tasks: Vec<_> = (0..size)
                         .map(|i| (Duration::from_millis(100 + i as u64 * 10), || async {}))
@@ -57,7 +57,7 @@ fn bench_wheel_insert_batch(c: &mut Criterion) {
                     let start = std::time::Instant::now();
                     
                     let _batch = black_box(
-                        timer.schedule_once_batch(tasks).await.unwrap()
+                        timer.schedule_once_batch(tasks).await
                     );
                     
                     total_duration += start.elapsed();
@@ -83,8 +83,8 @@ fn bench_wheel_cancel(c: &mut Criterion) {
             
             for _ in 0..iters {
                 // 准备阶段：创建 timer 和插入任务（不计入测量）
-                let timer = TimerWheel::with_defaults().unwrap();
-                let handle = timer.schedule_once(Duration::from_millis(100), || async {}).await.unwrap();
+                let timer = TimerWheel::with_defaults();
+                let handle = timer.schedule_once(Duration::from_millis(100), || async {}).await;
                 let task_id = handle.task_id();
                 
                 // 测量阶段：只测量取消操作的性能
@@ -118,12 +118,12 @@ fn bench_wheel_cancel_batch(c: &mut Criterion) {
                 
                 for _ in 0..iters {
                     // 准备阶段：创建 timer 和插入任务（不计入测量）
-                    let timer = TimerWheel::with_defaults().unwrap();
+                    let timer = TimerWheel::with_defaults();
                     
                     let tasks: Vec<_> = (0..size)
                         .map(|i| (Duration::from_millis(100 + i as u64 * 10), || async {}))
                         .collect();
-                    let batch = timer.schedule_once_batch(tasks).await.unwrap();
+                    let batch = timer.schedule_once_batch(tasks).await;
                     let task_ids: Vec<_> = batch.task_ids().to_vec();
                     
                     // 测量阶段：只测量批量取消的性能
@@ -158,12 +158,12 @@ fn bench_wheel_cancel_batch_same_slot(c: &mut Criterion) {
                 
                 for _ in 0..iters {
                     // 准备阶段：创建 timer 和插入相同延迟的任务（会进入同一槽位）
-                    let timer = TimerWheel::with_defaults().unwrap();
+                    let timer = TimerWheel::with_defaults();
                     
                     let tasks: Vec<_> = (0..size)
                         .map(|_| (Duration::from_millis(100), || async {}))
                         .collect();
-                    let batch = timer.schedule_once_batch(tasks).await.unwrap();
+                    let batch = timer.schedule_once_batch(tasks).await;
                     let task_ids: Vec<_> = batch.task_ids().to_vec();
                     
                     // 测量阶段：只测量批量取消的性能
@@ -198,7 +198,7 @@ fn bench_wheel_advance_empty(c: &mut Criterion) {
             
             for _ in 0..iters {
                 // 准备阶段：创建 timer（不计入测量）
-                let _timer = TimerWheel::with_defaults().unwrap();
+                let _timer = TimerWheel::with_defaults();
                 
                 // 测量阶段：让 tick 循环运行一次
                 let start = std::time::Instant::now();
@@ -229,13 +229,13 @@ fn bench_wheel_advance_with_tasks(c: &mut Criterion) {
                 
                 for _ in 0..iters {
                     // 准备阶段：创建 timer 并插入任务（不计入测量）
-                    let timer = TimerWheel::with_defaults().unwrap();
+                    let timer = TimerWheel::with_defaults();
                     
                     // 插入任务，延迟设置为 20ms（确保会在推进时到期）
                     let tasks: Vec<_> = (0..size)
                         .map(|_| (Duration::from_millis(20), || async {}))
                         .collect();
-                    let _batch = timer.schedule_once_batch(tasks).await.unwrap();
+                    let _batch = timer.schedule_once_batch(tasks).await;
                     
                     // 测量阶段：等待任务到期
                     let start = std::time::Instant::now();
@@ -266,7 +266,7 @@ fn bench_wheel_advance_mixed_rounds(c: &mut Criterion) {
             
             for _ in 0..iters {
                 // 准备阶段：创建 timer 并插入不同轮次的任务
-                let timer = TimerWheel::with_defaults().unwrap();
+                let timer = TimerWheel::with_defaults();
                 
                 // 插入不同延迟的任务，产生不同的轮次
                 let mut tasks = Vec::new();
@@ -275,7 +275,7 @@ fn bench_wheel_advance_mixed_rounds(c: &mut Criterion) {
                     let delay = Duration::from_millis(20 + (i % 20) * 10);
                     tasks.push((delay, || async {}));
                 }
-                let _batch = timer.schedule_once_batch(tasks).await.unwrap();
+                let _batch = timer.schedule_once_batch(tasks).await;
                 
                 // 测量阶段：推进多个 tick
                 let start = std::time::Instant::now();
@@ -305,7 +305,7 @@ fn bench_wheel_mixed_operations(c: &mut Criterion) {
             
             for _ in 0..iters {
                 // 准备阶段：创建 timer
-                let timer = TimerWheel::with_defaults().unwrap();
+                let timer = TimerWheel::with_defaults();
                 
                 // 测量阶段：执行混合操作
                 let start = std::time::Instant::now();
@@ -315,7 +315,7 @@ fn bench_wheel_mixed_operations(c: &mut Criterion) {
                     let tasks: Vec<_> = (0..50)
                         .map(|_| (Duration::from_millis(50 + round * 10), || async {}))
                         .collect();
-                    let batch = timer.schedule_once_batch(tasks).await.unwrap();
+                    let batch = timer.schedule_once_batch(tasks).await;
                     
                     // 取消其中一半
                     let to_cancel: Vec<_> = batch.task_ids().iter().step_by(2).copied().collect();
@@ -348,12 +348,12 @@ fn bench_wheel_cancel_small_batch(c: &mut Criterion) {
                 
                 for _ in 0..iters {
                     // 准备阶段：创建 timer 和插入任务
-                    let timer = TimerWheel::with_defaults().unwrap();
+                    let timer = TimerWheel::with_defaults();
                     
                     let tasks: Vec<_> = (0..size)
                         .map(|i| (Duration::from_millis(100 + i as u64 * 10), || async {}))
                         .collect();
-                    let batch = timer.schedule_once_batch(tasks).await.unwrap();
+                    let batch = timer.schedule_once_batch(tasks).await;
                     let task_ids: Vec<_> = batch.task_ids().to_vec();
                     
                     // 测量阶段：只测量批量取消的性能
@@ -388,13 +388,13 @@ fn bench_wheel_batch_multiple_slots(c: &mut Criterion) {
                 
                 for _ in 0..iters {
                     // 准备阶段：创建 timer 并插入跨多个槽位的任务
-                    let timer = TimerWheel::with_defaults().unwrap();
+                    let timer = TimerWheel::with_defaults();
                     
                     // 均匀分布在不同槽位
                     let tasks: Vec<_> = (0..size)
                         .map(|i| (Duration::from_millis(10 + i as u64), || async {}))
                         .collect();
-                    let batch = timer.schedule_once_batch(tasks).await.unwrap();
+                    let batch = timer.schedule_once_batch(tasks).await;
                     let task_ids: Vec<_> = batch.task_ids().to_vec();
                     
                     // 测量阶段：批量取消
