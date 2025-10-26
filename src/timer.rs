@@ -588,20 +588,21 @@ impl TimerWheel {
     /// }
     /// ```
     pub fn register_batch(&self, tasks: Vec<crate::task::TimerTask>) -> BatchHandle {
-        let mut completion_rxs = Vec::with_capacity(tasks.len());
-        let mut task_ids = Vec::with_capacity(tasks.len());
+        let task_count = tasks.len();
+        let mut completion_rxs = Vec::with_capacity(task_count);
+        let mut task_ids = Vec::with_capacity(task_count);
+        let mut prepared_tasks = Vec::with_capacity(task_count);
         
         // 步骤1: 准备所有 channels 和 notifiers（无锁）
-        let prepared_tasks: Vec<(Duration, crate::task::TimerTask, crate::task::CompletionNotifier)> = tasks
-            .into_iter()
-            .map(|task| {
-                let (completion_tx, completion_rx) = oneshot::channel();
-                let notifier = crate::task::CompletionNotifier(completion_tx);
-                completion_rxs.push(completion_rx);
-                task_ids.push(task.id);
-                (task.delay, task, notifier)
-            })
-            .collect();
+        // 优化：使用 for 循环代替 map + collect，避免闭包捕获开销
+        for task in tasks {
+            let (completion_tx, completion_rx) = oneshot::channel();
+            let notifier = crate::task::CompletionNotifier(completion_tx);
+            
+            task_ids.push(task.id);
+            completion_rxs.push(completion_rx);
+            prepared_tasks.push((task.delay, task, notifier));
+        }
         
         // 步骤2: 单次加锁，批量插入
         {

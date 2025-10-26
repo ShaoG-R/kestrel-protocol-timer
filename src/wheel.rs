@@ -149,7 +149,12 @@ impl Wheel {
     /// - 减少重复的边界检查和容量调整
     /// - 对于相同延迟的任务，可以复用计算结果
     pub fn insert_batch(&mut self, tasks: Vec<(Duration, TimerTask, crate::task::CompletionNotifier)>) -> Vec<TaskId> {
-        let mut task_ids = Vec::with_capacity(tasks.len());
+        let task_count = tasks.len();
+        
+        // 优化：预先分配 HashMap 容量，避免重新分配
+        self.task_index.reserve(task_count);
+        
+        let mut task_ids = Vec::with_capacity(task_count);
         
         for (delay, mut task, notifier) in tasks {
             let ticks = self.delay_to_ticks(delay);
