@@ -175,6 +175,7 @@ impl TimerService {
     /// println!("Task cancelled: {}", cancelled);
     /// # }
     /// ```
+    #[inline]
     pub async fn cancel_task(&self, task_id: TaskId) -> bool {
         // 优化：直接取消任务，无需通知 Actor
         // FuturesUnordered 会在任务被取消时自动清理
@@ -213,6 +214,7 @@ impl TimerService {
     /// println!("成功取消 {} 个任务", cancelled);
     /// # }
     /// ```
+    #[inline]
     pub async fn cancel_batch(&self, task_ids: &[TaskId]) -> usize {
         if task_ids.is_empty() {
             return 0;
@@ -321,6 +323,7 @@ impl TimerService {
     /// service.register(task).await;
     /// # }
     /// ```
+    #[inline]
     pub async fn register(&self, task: crate::task::TimerTask) {
         let (completion_tx, completion_rx) = tokio::sync::oneshot::channel();
         let notifier = crate::task::CompletionNotifier(completion_tx);
@@ -361,6 +364,7 @@ impl TimerService {
     /// service.register_batch(tasks).await;
     /// # }
     /// ```
+    #[inline]
     pub async fn register_batch(&self, tasks: Vec<crate::task::TimerTask>) {
         let task_count = tasks.len();
         let mut completion_rxs = Vec::with_capacity(task_count);

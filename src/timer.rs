@@ -545,6 +545,7 @@ impl TimerWheel {
     ///     handle.into_completion_receiver().0.await.ok();
     /// }
     /// ```
+    #[inline]
     pub fn register(&self, task: crate::task::TimerTask) -> TimerHandle {
         let (completion_tx, completion_rx) = oneshot::channel();
         let notifier = crate::task::CompletionNotifier(completion_tx);
@@ -587,6 +588,7 @@ impl TimerWheel {
     ///     println!("Registered {} timers", batch.len());
     /// }
     /// ```
+    #[inline]
     pub fn register_batch(&self, tasks: Vec<crate::task::TimerTask>) -> BatchHandle {
         let task_count = tasks.len();
         let mut completion_rxs = Vec::with_capacity(task_count);
@@ -639,6 +641,7 @@ impl TimerWheel {
     ///     println!("取消成功: {}", cancelled);
     /// }
     /// ```
+    #[inline]
     pub fn cancel(&self, task_id: TaskId) -> bool {
         let mut wheel = self.wheel.lock();
         wheel.cancel(task_id)
@@ -681,6 +684,7 @@ impl TimerWheel {
     ///     println!("已取消 {} 个定时器", cancelled);
     /// }
     /// ```
+    #[inline]
     pub fn cancel_batch(&self, task_ids: &[TaskId]) -> usize {
         let mut wheel = self.wheel.lock();
         wheel.cancel_batch(task_ids)

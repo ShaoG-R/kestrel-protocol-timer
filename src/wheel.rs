@@ -107,7 +107,7 @@ impl Wheel {
     ///
     /// # 返回
     /// 任务 ID
-
+    #[inline]
     pub fn insert(&mut self, delay: Duration, mut task: TimerTask, notifier: crate::task::CompletionNotifier) -> TaskId {
         let ticks = self.delay_to_ticks(delay);
         let total_ticks = self.current_tick + ticks;
@@ -148,6 +148,7 @@ impl Wheel {
     /// # 性能优势
     /// - 减少重复的边界检查和容量调整
     /// - 对于相同延迟的任务，可以复用计算结果
+    #[inline]
     pub fn insert_batch(&mut self, tasks: Vec<(Duration, TimerTask, crate::task::CompletionNotifier)>) -> Vec<TaskId> {
         let task_count = tasks.len();
         
@@ -193,6 +194,7 @@ impl Wheel {
     ///
     /// # 返回
     /// 如果任务存在且成功取消返回 true，否则返回 false
+    #[inline]
     pub fn cancel(&mut self, task_id: TaskId) -> bool {
         if let Some(location) = self.task_index.remove(&task_id) {
             let slot = &mut self.slots[location.slot_index];
@@ -229,6 +231,7 @@ impl Wheel {
     /// - 对同一槽位的多个取消操作可以批量处理
     /// - 使用不稳定排序提升性能
     /// - 小批量优化：根据配置阈值跳过排序，直接处理
+    #[inline]
     pub fn cancel_batch(&mut self, task_ids: &[TaskId]) -> usize {
         let mut cancelled_count = 0;
         
