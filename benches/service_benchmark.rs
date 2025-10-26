@@ -390,44 +390,6 @@ fn bench_schedule_with_callback(c: &mut Criterion) {
     group.finish();
 }
 
-/// 基准测试：无等待取消
-fn bench_cancel_no_wait(c: &mut Criterion) {
-    let mut group = c.benchmark_group("cancel_no_wait");
-    
-    for size in [10, 100, 1000].iter() {
-        group.bench_with_input(BenchmarkId::from_parameter(size), size, |b, &size| {
-            let runtime = tokio::runtime::Runtime::new().unwrap();
-            
-            b.to_async(&runtime).iter_custom(|iters| async move {
-                let mut total_duration = Duration::from_secs(0);
-                
-                for _ in 0..iters {
-                    // 准备阶段：创建 timer、service 和调度任务（不计入测量）
-                    let timer = TimerWheel::with_defaults().unwrap();
-                    let service = timer.create_service();
-                    
-                    let callbacks: Vec<_> = (0..size)
-                        .map(|_| (Duration::from_secs(10), || async {}))
-                        .collect();
-                    let task_ids = service.schedule_once_batch(callbacks).await.unwrap();
-                    
-                    // 测量阶段：只测量 cancel_task_no_wait 的性能
-                    let start = std::time::Instant::now();
-                    
-                    for task_id in task_ids {
-                        service.cancel_task_no_wait(task_id).await.unwrap();
-                    }
-                    
-                    total_duration += start.elapsed();
-                }
-                
-                total_duration
-            });
-        });
-    }
-    
-    group.finish();
-}
 
 criterion_group!(
     benches,
@@ -440,7 +402,6 @@ criterion_group!(
     bench_mixed_operations,
     bench_schedule_notify,
     bench_schedule_with_callback,
-    bench_cancel_no_wait,
 );
 
 criterion_main!(benches);

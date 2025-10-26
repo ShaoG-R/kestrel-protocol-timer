@@ -199,55 +199,6 @@ impl TimerService {
         Ok(success)
     }
 
-    /// 取消指定的任务（无需等待结果）
-    ///
-    /// 立即取消任务并返回，性能最优。
-    ///
-    /// # 参数
-    /// - `task_id`: 要取消的任务 ID
-    ///
-    /// # 返回
-    /// - `Ok(())`: 成功（无论任务是否存在）
-    /// - `Err(TimerError)`: 发送命令失败
-    ///
-    /// # 性能说明
-    /// 此方法是最快的取消方式，直接操作 Wheel 并异步通知 Actor 清理
-    ///
-    /// # 示例
-    /// ```no_run
-    /// # use timer::{TimerWheel, TimerService};
-    /// # use std::time::Duration;
-    /// # #[tokio::main]
-    /// # async fn main() {
-    /// let timer = TimerWheel::with_defaults().unwrap();
-    /// let service = timer.create_service();
-    /// 
-    /// // 直接通过 service 调度定时器
-    /// let task_id = service.schedule_once(Duration::from_secs(10), || async {}).await.unwrap();
-    /// 
-    /// // 发送取消请求，不等待结果
-    /// service.cancel_task_no_wait(task_id).await.unwrap();
-    /// # }
-    /// ```
-    pub async fn cancel_task_no_wait(&self, task_id: TaskId) -> Result<(), TimerError> {
-        // 优化：直接取消任务
-        let success = {
-            let mut wheel = self.wheel.lock();
-            wheel.cancel(task_id)
-        };
-        
-        // 异步通知 Actor 清理（忽略失败）
-        if success {
-            let _ = self.command_tx
-                .send(ServiceCommand::RemoveTasks { 
-                    task_ids: vec![task_id] 
-                })
-                .await;
-        }
-        
-        Ok(())
-    }
-
     /// 批量取消任务
     ///
     /// 使用底层的批量取消操作一次性取消多个任务，性能优于循环调用 cancel_task。
@@ -689,43 +640,6 @@ mod tests {
         // 尝试取消已经超时的任务，应该返回 false
         let cancelled = service.cancel_task(task_id).await.unwrap();
         assert!(!cancelled, "Timed out task should not exist anymore");
-    }
-
-    #[tokio::test]
-    async fn test_cancel_task_no_wait() {
-        let timer = TimerWheel::with_defaults().unwrap();
-        let service = timer.create_service();
-
-        // 添加一个长时间的定时器
-        let handle = timer.schedule_once(Duration::from_secs(10), || async {}).await.unwrap();
-        let task_id = handle.task_id();
-        
-        service.add_timer_handle(handle).await.unwrap();
-
-        // 使用 no_wait 取消任务
-        service.cancel_task_no_wait(task_id).await.unwrap();
-
-        // 等待一下确保内部取消操作完成
-        tokio::time::sleep(Duration::from_millis(50)).await;
-
-        // 尝试再次取消同一个任务，应该返回 false（因为已经被取消了）
-        let cancelled_again = service.cancel_task(task_id).await.unwrap();
-        assert!(!cancelled_again, "Task should have been removed from active_tasks");
-    }
-
-    #[tokio::test]
-    async fn test_cancel_task_no_wait_nonexistent() {
-        let timer = TimerWheel::with_defaults().unwrap();
-        let service = timer.create_service();
-
-        // 添加一个定时器以初始化 service
-        let handle = timer.schedule_once(Duration::from_millis(50), || async {}).await.unwrap();
-        service.add_timer_handle(handle).await.unwrap();
-
-        // 尝试取消一个不存在的任务（应该不会panic）
-        let fake_task_id = TaskId::new();
-        let result = service.cancel_task_no_wait(fake_task_id).await;
-        assert!(result.is_ok(), "cancel_task_no_wait should succeed even for nonexistent tasks");
     }
 
     #[tokio::test]
