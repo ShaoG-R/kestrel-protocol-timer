@@ -18,9 +18,5 @@ name = "service_benchmark"
 harness = false
 
 [[bench]]
-name = "timer_benchmark"
-harness = false
-
-[[bench]]
 name = "wheel_benchmark"
 harness = false
