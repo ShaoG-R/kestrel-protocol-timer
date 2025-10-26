@@ -2,6 +2,20 @@
 name = "kestrel-protocol-timer"
 version = "0.1.0"
 edition = "2024"
+authors = ["ShaoG-R"]
+license = "MIT OR Apache-2.0"
+description = "基于时间轮（Timing Wheel）算法的高性能异步定时器系统"
+readme = "README.md"
+repository = "https://github.com/ShaoG-R/kestrel-protocol-timer"
+homepage = "https://github.com/ShaoG-R/kestrel-protocol-timer"
+documentation = "https://docs.rs/kestrel-protocol-timer"
+keywords = ["timer", "timing-wheel", "async", "tokio", "scheduler"]
+categories = ["asynchronous", "concurrency", "data-structures"]
+exclude = [
+    "target/*",
+    ".git/*",
+    ".github/*",
+]
 
 [dependencies]
 tokio = { version = "1.48.0", features = ["full"] }
