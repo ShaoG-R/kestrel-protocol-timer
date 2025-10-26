@@ -12,7 +12,7 @@
 //! ## 快速开始
 //!
 //! ```no_run
-//! use timer::TimerWheel;
+//! use kestrel_protocol_timer::TimerWheel;
 //! use std::time::Duration;
 //!
 //! #[tokio::main]

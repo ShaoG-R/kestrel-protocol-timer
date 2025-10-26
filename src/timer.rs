@@ -32,7 +32,7 @@ impl TimerHandle {
     ///
     /// # 示例
     /// ```no_run
-    /// # use timer::TimerWheel;
+    /// # use kestrel_protocol_timer::TimerWheel;
     /// # use std::time::Duration;
     /// # #[tokio::main]
     /// # async fn main() {
@@ -58,7 +58,7 @@ impl TimerHandle {
     ///
     /// # 示例
     /// ```no_run
-    /// # use timer::TimerWheel;
+    /// # use kestrel_protocol_timer::TimerWheel;
     /// # use std::time::Duration;
     /// # #[tokio::main]
     /// # async fn main() {
@@ -80,7 +80,7 @@ impl TimerHandle {
     ///
     /// # 示例
     /// ```no_run
-    /// # use timer::TimerWheel;
+    /// # use kestrel_protocol_timer::TimerWheel;
     /// # use std::time::Duration;
     /// # #[tokio::main]
     /// # async fn main() {
@@ -123,7 +123,7 @@ impl BatchHandle {
     ///
     /// # 示例
     /// ```no_run
-    /// # use timer::TimerWheel;
+    /// # use kestrel_protocol_timer::TimerWheel;
     /// # use std::time::Duration;
     /// # #[tokio::main]
     /// # async fn main() {
@@ -148,7 +148,7 @@ impl BatchHandle {
     ///
     /// # 示例
     /// ```no_run
-    /// # use timer::TimerWheel;
+    /// # use kestrel_protocol_timer::TimerWheel;
     /// # use std::time::Duration;
     /// # #[tokio::main]
     /// # async fn main() {
@@ -205,7 +205,7 @@ impl BatchHandle {
     ///
     /// # 示例
     /// ```no_run
-    /// # use timer::TimerWheel;
+    /// # use kestrel_protocol_timer::TimerWheel;
     /// # use std::time::Duration;
     /// # #[tokio::main]
     /// # async fn main() {
@@ -235,7 +235,7 @@ impl BatchHandle {
 /// 
 /// # 示例
 /// ```no_run
-/// # use timer::TimerWheel;
+/// # use kestrel_protocol_timer::TimerWheel;
 /// # use std::time::Duration;
 /// # #[tokio::main]
 /// # async fn main() {
@@ -318,7 +318,7 @@ impl TimerWheel {
     ///
     /// # 示例
     /// ```no_run
-    /// use timer::TimerWheel;
+    /// use kestrel_protocol_timer::TimerWheel;
     /// use std::time::Duration;
     ///
     /// #[tokio::main]
@@ -360,7 +360,7 @@ impl TimerWheel {
     ///
     /// # 示例
     /// ```no_run
-    /// use timer::TimerWheel;
+    /// use kestrel_protocol_timer::TimerWheel;
     /// use std::time::Duration;
     ///
     /// #[tokio::main]
@@ -451,7 +451,7 @@ impl TimerWheel {
     ///
     /// # 示例
     /// ```no_run
-    /// use timer::TimerWheel;
+    /// use kestrel_protocol_timer::TimerWheel;
     /// use std::time::Duration;
     /// use std::sync::Arc;
     ///
@@ -491,7 +491,7 @@ impl TimerWheel {
     ///
     /// # 示例
     /// ```no_run
-    /// use timer::TimerWheel;
+    /// use kestrel_protocol_timer::TimerWheel;
     /// use std::time::Duration;
     /// use std::sync::Arc;
     /// use std::sync::atomic::{AtomicU32, Ordering};
@@ -543,7 +543,7 @@ impl TimerWheel {
     ///
     /// # 示例
     /// ```no_run
-    /// use timer::TimerWheel;
+    /// use kestrel_protocol_timer::TimerWheel;
     /// use std::time::Duration;
     ///
     /// #[tokio::main]
@@ -587,7 +587,7 @@ impl TimerWheel {
     ///
     /// # 示例
     /// ```no_run
-    /// use timer::TimerWheel;
+    /// use kestrel_protocol_timer::TimerWheel;
     /// use std::time::Duration;
     ///
     /// #[tokio::main]

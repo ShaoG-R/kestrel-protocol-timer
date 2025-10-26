@@ -37,7 +37,7 @@ enum ServiceCommand {
 ///
 /// # 示例
 /// ```no_run
-/// use timer::{TimerWheel, TimerService};
+/// use kestrel_protocol_timer::{TimerWheel, TimerService};
 /// use std::time::Duration;
 ///
 /// #[tokio::main]
@@ -80,7 +80,7 @@ impl TimerService {
     ///
     /// # 示例
     /// ```no_run
-    /// use timer::TimerWheel;
+    /// use kestrel_protocol_timer::TimerWheel;
     ///
     /// #[tokio::main]
     /// async fn main() {
@@ -132,7 +132,7 @@ impl TimerService {
     ///
     /// # 示例
     /// ```no_run
-    /// # use timer::TimerWheel;
+    /// # use kestrel_protocol_timer::TimerWheel;
     /// # use std::time::Duration;
     /// # #[tokio::main]
     /// # async fn main() {
@@ -164,7 +164,7 @@ impl TimerService {
     ///
     /// # 示例
     /// ```no_run
-    /// # use timer::{TimerWheel, TimerService};
+    /// # use kestrel_protocol_timer::{TimerWheel, TimerService};
     /// # use std::time::Duration;
     /// # #[tokio::main]
     /// # async fn main() {
@@ -211,7 +211,7 @@ impl TimerService {
     ///
     /// # 示例
     /// ```no_run
-    /// # use timer::{TimerWheel, TimerService};
+    /// # use kestrel_protocol_timer::{TimerWheel, TimerService};
     /// # use std::time::Duration;
     /// # #[tokio::main]
     /// # async fn main() {
@@ -263,7 +263,7 @@ impl TimerService {
     ///
     /// # 示例
     /// ```no_run
-    /// # use timer::TimerWheel;
+    /// # use kestrel_protocol_timer::TimerWheel;
     /// # use std::time::Duration;
     /// # #[tokio::main]
     /// # async fn main() {
@@ -304,7 +304,7 @@ impl TimerService {
     ///
     /// # 示例
     /// ```no_run
-    /// # use timer::TimerWheel;
+    /// # use kestrel_protocol_timer::TimerWheel;
     /// # use std::time::Duration;
     /// # #[tokio::main]
     /// # async fn main() {
@@ -348,7 +348,7 @@ impl TimerService {
     ///
     /// # 示例
     /// ```no_run
-    /// # use timer::TimerWheel;
+    /// # use kestrel_protocol_timer::TimerWheel;
     /// # use std::time::Duration;
     /// # #[tokio::main]
     /// # async fn main() {
@@ -403,7 +403,7 @@ impl TimerService {
     ///
     /// # 示例
     /// ```no_run
-    /// # use timer::TimerWheel;
+    /// # use kestrel_protocol_timer::TimerWheel;
     /// # #[tokio::main]
     /// # async fn main() {
     /// let timer = TimerWheel::with_defaults().unwrap();
