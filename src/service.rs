@@ -5,7 +5,6 @@ use crate::wheel::Wheel;
 use futures::stream::{FuturesUnordered, StreamExt};
 use futures::future::BoxFuture;
 use parking_lot::Mutex;
-use rustc_hash::FxHashSet;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc;
@@ -17,10 +16,6 @@ enum ServiceCommand {
     AddBatchHandle(BatchHandle),
     /// 添加单个定时器句柄
     AddTimerHandle(TimerHandle),
-    /// 批量从活跃任务集合中移除任务（用于直接取消后的清理）
-    RemoveTasks {
-        task_ids: Vec<TaskId>,
-    },
     /// 关闭 Service
     Shutdown,
 }
@@ -181,23 +176,10 @@ impl TimerService {
     /// # }
     /// ```
     pub async fn cancel_task(&self, task_id: TaskId) -> bool {
-        // 优化：直接取消任务，避免通过 Actor 的异步往返
-        // 这将延迟从 "2次异步通信" 减少到 "0次等待"
-        let success = {
-            let mut wheel = self.wheel.lock();
-            wheel.cancel(task_id)
-        };
-        
-        // 异步通知 Actor 清理 active_tasks（无需等待结果）
-        if success {
-            let _ = self.command_tx
-                .send(ServiceCommand::RemoveTasks { 
-                    task_ids: vec![task_id] 
-                })
-                .await;
-        }
-        
-        success
+        // 优化：直接取消任务，无需通知 Actor
+        // FuturesUnordered 会在任务被取消时自动清理
+        let mut wheel = self.wheel.lock();
+        wheel.cancel(task_id)
     }
 
     /// 批量取消任务
@@ -236,20 +218,10 @@ impl TimerService {
             return 0;
         }
 
-        // 直接使用底层的批量取消
-        let cancelled_count = {
-            let mut wheel = self.wheel.lock();
-            wheel.cancel_batch(task_ids)
-        };
-
-        // 使用批量移除命令，一次性发送所有需要移除的任务ID
-        let _ = self.command_tx
-            .send(ServiceCommand::RemoveTasks { 
-                task_ids: task_ids.to_vec() 
-            })
-            .await;
-
-        cancelled_count
+        // 优化：直接使用底层的批量取消，无需通知 Actor
+        // FuturesUnordered 会在任务被取消时自动清理
+        let mut wheel = self.wheel.lock();
+        wheel.cancel_batch(task_ids)
     }
 
     /// 创建定时器任务（静态方法，申请阶段）
@@ -454,8 +426,6 @@ struct ServiceActor {
     command_rx: mpsc::Receiver<ServiceCommand>,
     /// 超时发送端
     timeout_tx: mpsc::Sender<TaskId>,
-    /// 活跃任务ID集合（使用 FxHashSet 提升性能）
-    active_tasks: FxHashSet<TaskId>,
 }
 
 impl ServiceActor {
@@ -463,7 +433,6 @@ impl ServiceActor {
         Self {
             command_rx,
             timeout_tx,
-            active_tasks: FxHashSet::default(),
         }
     }
 
@@ -478,8 +447,6 @@ impl ServiceActor {
                 Some((task_id, _result)) = futures.next() => {
                     // 任务超时，转发 TaskId
                     let _ = self.timeout_tx.send(task_id).await;
-                    // 从活跃任务集合中移除该任务
-                    self.active_tasks.remove(&task_id);
                     // 任务会自动从 FuturesUnordered 中移除
                 }
                 
@@ -493,11 +460,8 @@ impl ServiceActor {
                                 ..
                             } = batch;
                             
-                            // 将所有任务添加到 futures 和 active_tasks 中
+                            // 将所有任务添加到 futures 中
                             for (task_id, rx) in task_ids.into_iter().zip(completion_rxs.into_iter()) {
-                                // 记录到活跃任务集合
-                                self.active_tasks.insert(task_id);
-                                
                                 let future: BoxFuture<'static, (TaskId, Result<(), tokio::sync::oneshot::error::RecvError>)> = Box::pin(async move {
                                     (task_id, rx.await)
                                 });
@@ -511,21 +475,11 @@ impl ServiceActor {
                                 ..
                             } = handle;
                             
-                            // 记录到活跃任务集合
-                            self.active_tasks.insert(task_id);
-                            
                             // 添加到 futures 中
                             let future: BoxFuture<'static, (TaskId, Result<(), tokio::sync::oneshot::error::RecvError>)> = Box::pin(async move {
                                 (task_id, completion_rx.0.await)
                             });
                             futures.push(future);
-                        }
-                        ServiceCommand::RemoveTasks { task_ids } => {
-                            // 批量从活跃任务集合中移除任务
-                            // 用于直接取消后的清理工作
-                            for task_id in task_ids {
-                                self.active_tasks.remove(&task_id);
-                            }
                         }
                         ServiceCommand::Shutdown => {
                             break;
