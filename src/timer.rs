@@ -1,5 +1,5 @@
 use crate::config::{ServiceConfig, WheelConfig};
-use crate::task::{CallbackWrapper, TaskId, TaskCompletionReason, TimerCallback};
+use crate::task::{CallbackWrapper, TaskId, TaskCompletionReason};
 use crate::wheel::Wheel;
 use parking_lot::Mutex;
 use std::sync::Arc;
@@ -32,12 +32,14 @@ impl TimerHandle {
     ///
     /// # 示例
     /// ```no_run
-    /// # use kestrel_protocol_timer::{TimerWheel, TimerTask};
+    /// # use kestrel_protocol_timer::{TimerWheel, CallbackWrapper};
     /// # use std::time::Duration;
+    /// # 
     /// # #[tokio::main]
     /// # async fn main() {
     /// let timer = TimerWheel::with_defaults();
-    /// let task = TimerWheel::create_task(Duration::from_secs(1), || async {});
+    /// let callback = Some(CallbackWrapper::new(|| async {}));
+    /// let task = TimerWheel::create_task(Duration::from_secs(1), callback);
     /// let handle = timer.register(task);
     /// 
     /// // 取消定时器
@@ -54,14 +56,16 @@ impl TimerHandle {
     ///
     /// # 示例
     /// ```no_run
-    /// # use kestrel_protocol_timer::{TimerWheel, TimerTask};
+    /// # use kestrel_protocol_timer::{TimerWheel, CallbackWrapper};
     /// # use std::time::Duration;
+    /// # 
     /// # #[tokio::main]
     /// # async fn main() {
     /// let timer = TimerWheel::with_defaults();
-    /// let task = TimerWheel::create_task(Duration::from_secs(1), || async {
+    /// let callback = Some(CallbackWrapper::new(|| async {
     ///     println!("Timer fired!");
-    /// });
+    /// }));
+    /// let task = TimerWheel::create_task(Duration::from_secs(1), callback);
     /// let handle = timer.register(task);
     /// 
     /// // 等待定时器完成（使用 into_completion_receiver 消耗句柄）
@@ -77,14 +81,16 @@ impl TimerHandle {
     ///
     /// # 示例
     /// ```no_run
-    /// # use kestrel_protocol_timer::{TimerWheel, TimerTask};
+    /// # use kestrel_protocol_timer::{TimerWheel, CallbackWrapper};
     /// # use std::time::Duration;
+    /// # 
     /// # #[tokio::main]
     /// # async fn main() {
     /// let timer = TimerWheel::with_defaults();
-    /// let task = TimerWheel::create_task(Duration::from_secs(1), || async {
+    /// let callback = Some(CallbackWrapper::new(|| async {
     ///     println!("Timer fired!");
-    /// });
+    /// }));
+    /// let task = TimerWheel::create_task(Duration::from_secs(1), callback);
     /// let handle = timer.register(task);
     /// 
     /// // 等待定时器完成
@@ -121,14 +127,16 @@ impl BatchHandle {
     ///
     /// # 示例
     /// ```no_run
-    /// # use kestrel_protocol_timer::{TimerWheel, TimerTask};
+    /// # use kestrel_protocol_timer::{TimerWheel, CallbackWrapper};
     /// # use std::time::Duration;
+    /// # 
     /// # #[tokio::main]
     /// # async fn main() {
     /// let timer = TimerWheel::with_defaults();
-    /// let tasks = TimerWheel::create_batch(
-    ///     (0..10).map(|_| (Duration::from_secs(1), || async {})).collect()
-    /// );
+    /// let callbacks: Vec<(Duration, Option<CallbackWrapper>)> = (0..10)
+    ///     .map(|_| (Duration::from_secs(1), Some(CallbackWrapper::new(|| async {}))))
+    ///     .collect();
+    /// let tasks = TimerWheel::create_batch(callbacks);
     /// let batch = timer.register_batch(tasks);
     /// 
     /// let cancelled = batch.cancel_all();
@@ -146,14 +154,16 @@ impl BatchHandle {
     ///
     /// # 示例
     /// ```no_run
-    /// # use kestrel_protocol_timer::{TimerWheel, TimerTask};
+    /// # use kestrel_protocol_timer::{TimerWheel, CallbackWrapper};
     /// # use std::time::Duration;
+    /// # 
     /// # #[tokio::main]
     /// # async fn main() {
     /// let timer = TimerWheel::with_defaults();
-    /// let tasks = TimerWheel::create_batch(
-    ///     (0..3).map(|_| (Duration::from_secs(1), || async {})).collect()
-    /// );
+    /// let callbacks: Vec<(Duration, Option<CallbackWrapper>)> = (0..3)
+    ///     .map(|_| (Duration::from_secs(1), Some(CallbackWrapper::new(|| async {}))))
+    ///     .collect();
+    /// let tasks = TimerWheel::create_batch(callbacks);
     /// let batch = timer.register_batch(tasks);
     /// 
     /// // 转换为独立的句柄
@@ -203,14 +213,16 @@ impl BatchHandle {
     ///
     /// # 示例
     /// ```no_run
-    /// # use kestrel_protocol_timer::{TimerWheel, TimerTask};
+    /// # use kestrel_protocol_timer::{TimerWheel, CallbackWrapper};
     /// # use std::time::Duration;
+    /// # 
     /// # #[tokio::main]
     /// # async fn main() {
     /// let timer = TimerWheel::with_defaults();
-    /// let tasks = TimerWheel::create_batch(
-    ///     (0..3).map(|_| (Duration::from_secs(1), || async {})).collect()
-    /// );
+    /// let callbacks: Vec<(Duration, Option<CallbackWrapper>)> = (0..3)
+    ///     .map(|_| (Duration::from_secs(1), Some(CallbackWrapper::new(|| async {}))))
+    ///     .collect();
+    /// let tasks = TimerWheel::create_batch(callbacks);
     /// let batch = timer.register_batch(tasks);
     /// 
     /// // 获取所有完成通知接收器
@@ -233,14 +245,16 @@ impl BatchHandle {
 /// 
 /// # 示例
 /// ```no_run
-/// # use kestrel_protocol_timer::{TimerWheel, TimerTask};
+/// # use kestrel_protocol_timer::{TimerWheel, CallbackWrapper};
 /// # use std::time::Duration;
+/// # 
 /// # #[tokio::main]
 /// # async fn main() {
 /// let timer = TimerWheel::with_defaults();
-/// let tasks = TimerWheel::create_batch(
-///     (0..3).map(|_| (Duration::from_secs(1), || async {})).collect()
-/// );
+/// let callbacks: Vec<(Duration, Option<CallbackWrapper>)> = (0..3)
+///     .map(|_| (Duration::from_secs(1), Some(CallbackWrapper::new(|| async {}))))
+///     .collect();
+/// let tasks = TimerWheel::create_batch(callbacks);
 /// let batch = timer.register_batch(tasks);
 /// 
 /// // 直接迭代，每个元素都是独立的 TimerHandle
@@ -324,7 +338,7 @@ impl TimerWheel {
     ///     let timer = TimerWheel::new(config);
     ///     
     ///     // 使用两步式 API
-    ///     let task = TimerWheel::create_task(Duration::from_secs(1), || async {});
+    ///     let task = TimerWheel::create_task(Duration::from_secs(1), None);
     ///     let handle = timer.register(task);
     /// }
     /// ```
@@ -369,8 +383,9 @@ impl TimerWheel {
     ///
     /// # 示例
     /// ```no_run
-    /// use kestrel_protocol_timer::{TimerWheel, TimerService};
+    /// use kestrel_protocol_timer::{TimerWheel, TimerService, CallbackWrapper};
     /// use std::time::Duration;
+    /// 
     ///
     /// #[tokio::main]
     /// async fn main() {
@@ -378,9 +393,10 @@ impl TimerWheel {
     ///     let mut service = timer.create_service();
     ///     
     ///     // 使用两步式 API 通过 service 批量调度定时器
-    ///     let tasks = TimerService::create_batch(
-    ///         (0..5).map(|_| (Duration::from_millis(100), || async {})).collect()
-    ///     );
+    ///     let callbacks: Vec<(Duration, Option<CallbackWrapper>)> = (0..5)
+    ///         .map(|_| (Duration::from_millis(100), Some(CallbackWrapper::new(|| async {}))))
+    ///         .collect();
+    ///     let tasks = TimerService::create_batch(callbacks);
     ///     service.register_batch(tasks).unwrap();
     ///     
     ///     // 接收超时通知
@@ -432,17 +448,18 @@ impl TimerWheel {
     /// 
     /// # 示例
     /// ```no_run
-    /// use kestrel_protocol_timer::{TimerWheel, TimerTask};
+    /// use kestrel_protocol_timer::{TimerWheel, TimerTask, CallbackWrapper};
     /// use std::time::Duration;
+    /// 
     /// 
     /// #[tokio::main]
     /// async fn main() {
     ///     let timer = TimerWheel::with_defaults();
     ///     
     ///     // 步骤 1: 创建任务
-    ///     let task = TimerWheel::create_task(Duration::from_secs(1), || async {
+    ///     let task = TimerWheel::create_task(Duration::from_secs(1), Some(CallbackWrapper::new(|| async {
     ///         println!("Timer fired!");
-    ///     });
+    ///     })));
     ///     
     ///     // 获取任务 ID
     ///     let task_id = task.get_id();
@@ -452,13 +469,9 @@ impl TimerWheel {
     ///     let handle = timer.register(task);
     /// }
     /// ```
-    pub fn create_task<C>(delay: Duration, callback: C) -> crate::task::TimerTask
-    where
-        C: TimerCallback,
-    {
-        use std::sync::Arc;
-        let callback_wrapper = Arc::new(callback) as CallbackWrapper;
-        crate::task::TimerTask::new(delay, Some(callback_wrapper))
+    #[inline]
+    pub fn create_task(delay: Duration, callback: Option<CallbackWrapper>) -> crate::task::TimerTask {
+        crate::task::TimerTask::new(delay, callback)
     }
     
     /// 批量创建定时器任务（申请阶段）
@@ -471,7 +484,7 @@ impl TimerWheel {
     /// 
     /// # 示例
     /// ```no_run
-    /// use kestrel_protocol_timer::{TimerWheel, TimerTask};
+    /// use kestrel_protocol_timer::{TimerWheel, TimerTask, CallbackWrapper};
     /// use std::time::Duration;
     /// use std::sync::Arc;
     /// use std::sync::atomic::{AtomicU32, Ordering};
@@ -482,16 +495,16 @@ impl TimerWheel {
     ///     let counter = Arc::new(AtomicU32::new(0));
     ///     
     ///     // 步骤 1: 批量创建任务
-    ///     let callbacks: Vec<_> = (0..3)
+    ///     let callbacks: Vec<(Duration, Option<CallbackWrapper>)> = (0..3)
     ///         .map(|i| {
     ///             let counter = Arc::clone(&counter);
     ///             let delay = Duration::from_millis(100 + i * 100);
-    ///             let callback = move || {
+    ///             let callback = Some(CallbackWrapper::new(move || {
     ///                 let counter = Arc::clone(&counter);
     ///                 async move {
     ///                     counter.fetch_add(1, Ordering::SeqCst);
     ///                 }
-    ///             };
+    ///             }));
     ///             (delay, callback)
     ///         })
     ///         .collect();
@@ -503,17 +516,12 @@ impl TimerWheel {
     ///     let batch = timer.register_batch(tasks);
     /// }
     /// ```
-    pub fn create_batch<C>(callbacks: Vec<(Duration, C)>) -> Vec<crate::task::TimerTask>
-    where
-        C: TimerCallback,
+    #[inline]
+    pub fn create_batch(callbacks: Vec<(Duration, Option<CallbackWrapper>)>) -> Vec<crate::task::TimerTask>
     {
-        use std::sync::Arc;
         callbacks
             .into_iter()
-            .map(|(delay, callback)| {
-                let callback_wrapper = Arc::new(callback) as CallbackWrapper;
-                crate::task::TimerTask::new(delay, Some(callback_wrapper))
-            })
+            .map(|(delay, callback)| crate::task::TimerTask::new(delay, callback))
             .collect()
     }
     
@@ -527,16 +535,17 @@ impl TimerWheel {
     /// 
     /// # 示例
     /// ```no_run
-    /// use kestrel_protocol_timer::{TimerWheel, TimerTask};
+    /// use kestrel_protocol_timer::{TimerWheel, TimerTask, CallbackWrapper};
+    /// 
     /// use std::time::Duration;
     /// 
     /// #[tokio::main]
     /// async fn main() {
     ///     let timer = TimerWheel::with_defaults();
     ///     
-    ///     let task = TimerWheel::create_task(Duration::from_secs(1), || async {
+    ///     let task = TimerWheel::create_task(Duration::from_secs(1), Some(CallbackWrapper::new(|| async {
     ///         println!("Timer fired!");
-    ///     });
+    ///     })));
     ///     let task_id = task.get_id();
     ///     
     ///     let handle = timer.register(task);
@@ -580,7 +589,7 @@ impl TimerWheel {
     ///     let timer = TimerWheel::with_defaults();
     ///     
     ///     let callbacks: Vec<_> = (0..3)
-    ///         .map(|_| (Duration::from_secs(1), || async {}))
+    ///         .map(|_| (Duration::from_secs(1), None))
     ///         .collect();
     ///     let tasks = TimerWheel::create_batch(callbacks);
     ///     
@@ -625,14 +634,17 @@ impl TimerWheel {
     /// 
     /// # 示例
     /// ```no_run
-    /// use kestrel_protocol_timer::{TimerWheel, TimerTask};
+    /// use kestrel_protocol_timer::{TimerWheel, TimerTask, CallbackWrapper};
+    /// 
     /// use std::time::Duration;
     ///
     /// #[tokio::main]
     /// async fn main() {
     ///     let timer = TimerWheel::with_defaults();
     ///     
-    ///     let task = TimerWheel::create_task(Duration::from_secs(10), || async {});
+    ///     let task = TimerWheel::create_task(Duration::from_secs(10), Some(CallbackWrapper::new(|| async {
+    ///         println!("Timer fired!");
+    ///     })));
     ///     let task_id = task.get_id();
     ///     let _handle = timer.register(task);
     ///     
@@ -669,9 +681,9 @@ impl TimerWheel {
     ///     let timer = TimerWheel::with_defaults();
     ///     
     ///     // 创建多个定时器
-    ///     let task1 = TimerWheel::create_task(Duration::from_secs(10), || async {});
-    ///     let task2 = TimerWheel::create_task(Duration::from_secs(10), || async {});
-    ///     let task3 = TimerWheel::create_task(Duration::from_secs(10), || async {});
+    ///     let task1 = TimerWheel::create_task(Duration::from_secs(10), None);
+    ///     let task2 = TimerWheel::create_task(Duration::from_secs(10), None);
+    ///     let task3 = TimerWheel::create_task(Duration::from_secs(10), None);
     ///     
     ///     let task_ids = vec![task1.get_id(), task2.get_id(), task3.get_id()];
     ///     
@@ -706,85 +718,36 @@ impl TimerWheel {
     ///
     /// # 示例
     /// ```no_run
-    /// use kestrel_protocol_timer::{TimerWheel, TimerTask};
+    /// use kestrel_protocol_timer::{TimerWheel, TimerTask, CallbackWrapper};
     /// use std::time::Duration;
+    /// 
     ///
     /// #[tokio::main]
     /// async fn main() {
     ///     let timer = TimerWheel::with_defaults();
     ///     
-    ///     let task = TimerWheel::create_task(Duration::from_secs(5), || async {
+    ///     let task = TimerWheel::create_task(Duration::from_secs(5), Some(CallbackWrapper::new(|| async {
     ///         println!("Timer fired!");
-    ///     });
+    ///     })));
     ///     let task_id = task.get_id();
     ///     let _handle = timer.register(task);
     ///     
     ///     // 推迟到 10 秒后触发
-    ///     let success = timer.postpone(task_id, Duration::from_secs(10));
+    ///     let success = timer.postpone(task_id, Duration::from_secs(10), Some(CallbackWrapper::new(|| async {
+    ///         println!("Timer fired!");
+    ///     })));
     ///     println!("推迟成功: {}", success);
     /// }
     /// ```
     #[inline]
-    pub fn postpone(&self, task_id: TaskId, new_delay: Duration) -> bool {
-        let mut wheel = self.wheel.lock();
-        wheel.postpone(task_id, new_delay, None)
-    }
-
-    /// 推迟定时器（替换回调）
-    ///
-    /// # 参数
-    /// - `task_id`: 要推迟的任务 ID
-    /// - `new_delay`: 新的延迟时间（从当前时间点重新计算）
-    /// - `callback`: 新的回调函数
-    ///
-    /// # 返回
-    /// 如果任务存在且成功推迟返回 true，否则返回 false
-    ///
-    /// # 注意
-    /// - 推迟后任务 ID 保持不变
-    /// - 原有的 completion_receiver 仍然有效
-    /// - 回调函数会被替换为新的回调
-    ///
-    /// # 示例
-    /// ```no_run
-    /// use kestrel_protocol_timer::{TimerWheel, TimerTask};
-    /// use std::time::Duration;
-    ///
-    /// #[tokio::main]
-    /// async fn main() {
-    ///     let timer = TimerWheel::with_defaults();
-    ///     
-    ///     let task = TimerWheel::create_task(Duration::from_secs(5), || async {
-    ///         println!("Original callback");
-    ///     });
-    ///     let task_id = task.get_id();
-    ///     let _handle = timer.register(task);
-    ///     
-    ///     // 推迟并替换回调
-    ///     let success = timer.postpone_with_callback(
-    ///         task_id,
-    ///         Duration::from_secs(10),
-    ///         || async {
-    ///             println!("New callback!");
-    ///         }
-    ///     );
-    ///     println!("推迟成功: {}", success);
-    /// }
-    /// ```
-    #[inline]
-    pub fn postpone_with_callback<C>(
+    pub fn postpone(
         &self,
         task_id: TaskId,
         new_delay: Duration,
-        callback: C,
-    ) -> bool
-    where
-        C: TimerCallback,
-    {
-        use std::sync::Arc;
-        let callback_wrapper = Arc::new(callback) as CallbackWrapper;
+        callback: Option<CallbackWrapper>,
+    ) -> bool {
         let mut wheel = self.wheel.lock();
-        wheel.postpone(task_id, new_delay, Some(callback_wrapper))
+        wheel.postpone(task_id, new_delay, callback)
     }
 
     /// 批量推迟定时器（保持原回调）
@@ -809,9 +772,9 @@ impl TimerWheel {
     ///     let timer = TimerWheel::with_defaults();
     ///     
     ///     // 创建多个定时器
-    ///     let task1 = TimerWheel::create_task(Duration::from_secs(5), || async {});
-    ///     let task2 = TimerWheel::create_task(Duration::from_secs(5), || async {});
-    ///     let task3 = TimerWheel::create_task(Duration::from_secs(5), || async {});
+    ///     let task1 = TimerWheel::create_task(Duration::from_secs(5), None);
+    ///     let task2 = TimerWheel::create_task(Duration::from_secs(5), None);
+    ///     let task3 = TimerWheel::create_task(Duration::from_secs(5), None);
     ///     
     ///     let task_ids = vec![
     ///         (task1.get_id(), Duration::from_secs(10)),
@@ -830,12 +793,8 @@ impl TimerWheel {
     /// ```
     #[inline]
     pub fn postpone_batch(&self, updates: &[(TaskId, Duration)]) -> usize {
-        let updates_vec: Vec<_> = updates
-            .iter()
-            .map(|(task_id, delay)| (*task_id, *delay, None))
-            .collect();
         let mut wheel = self.wheel.lock();
-        wheel.postpone_batch(updates_vec)
+        wheel.postpone_batch(updates.to_vec())
     }
 
     /// 批量推迟定时器（替换回调）
@@ -852,7 +811,7 @@ impl TimerWheel {
     ///
     /// # 示例
     /// ```no_run
-    /// use kestrel_protocol_timer::{TimerWheel, TimerTask};
+    /// use kestrel_protocol_timer::{TimerWheel, TimerTask, CallbackWrapper};
     /// use std::time::Duration;
     /// use std::sync::Arc;
     /// use std::sync::atomic::{AtomicU32, Ordering};
@@ -863,8 +822,8 @@ impl TimerWheel {
     ///     let counter = Arc::new(AtomicU32::new(0));
     ///     
     ///     // 创建多个定时器
-    ///     let task1 = TimerWheel::create_task(Duration::from_secs(5), || async {});
-    ///     let task2 = TimerWheel::create_task(Duration::from_secs(5), || async {});
+    ///     let task1 = TimerWheel::create_task(Duration::from_secs(5), None);
+    ///     let task2 = TimerWheel::create_task(Duration::from_secs(5), None);
     ///     
     ///     let id1 = task1.get_id();
     ///     let id2 = task2.get_id();
@@ -877,10 +836,10 @@ impl TimerWheel {
     ///         .into_iter()
     ///         .map(|id| {
     ///             let counter = Arc::clone(&counter);
-    ///             (id, Duration::from_secs(10), move || {
+    ///             (id, Duration::from_secs(10), Some(CallbackWrapper::new(move || {
     ///                 let counter = Arc::clone(&counter);
     ///                 async move { counter.fetch_add(1, Ordering::SeqCst); }
-    ///             })
+    ///             })))
     ///         })
     ///         .collect();
     ///     let postponed = timer.postpone_batch_with_callbacks(updates);
@@ -888,23 +847,12 @@ impl TimerWheel {
     /// }
     /// ```
     #[inline]
-    pub fn postpone_batch_with_callbacks<C>(
+    pub fn postpone_batch_with_callbacks(
         &self,
-        updates: Vec<(TaskId, Duration, C)>,
-    ) -> usize
-    where
-        C: TimerCallback,
-    {
-        use std::sync::Arc;
-        let updates_vec: Vec<_> = updates
-            .into_iter()
-            .map(|(task_id, delay, callback)| {
-                let callback_wrapper = Arc::new(callback) as CallbackWrapper;
-                (task_id, delay, Some(callback_wrapper))
-            })
-            .collect();
+        updates: Vec<(TaskId, Duration, Option<CallbackWrapper>)>,
+    ) -> usize {
         let mut wheel = self.wheel.lock();
-        wheel.postpone_batch(updates_vec)
+        wheel.postpone_batch_with_callbacks(updates.to_vec())
     }
     
     /// 核心 tick 循环
@@ -985,12 +933,12 @@ mod tests {
 
         let task = TimerWheel::create_task(
             Duration::from_millis(50),
-            move || {
+            Some(CallbackWrapper::new(move || {
                 let counter = Arc::clone(&counter_clone);
                 async move {
                     counter.fetch_add(1, Ordering::SeqCst);
                 }
-            },
+            })),
         );
         let _handle = timer.register(task);
 
@@ -1008,12 +956,12 @@ mod tests {
 
         let task = TimerWheel::create_task(
             Duration::from_millis(100),
-            move || {
+            Some(CallbackWrapper::new(move || {
                 let counter = Arc::clone(&counter_clone);
                 async move {
                     counter.fetch_add(1, Ordering::SeqCst);
                 }
-            },
+            })),
         );
         let handle = timer.register(task);
 
@@ -1035,12 +983,12 @@ mod tests {
 
         let task = TimerWheel::create_task(
             Duration::from_millis(100),
-            move || {
+            Some(CallbackWrapper::new(move || {
                 let counter = Arc::clone(&counter_clone);
                 async move {
                     counter.fetch_add(1, Ordering::SeqCst);
                 }
-            },
+            })),
         );
         let handle = timer.register(task);
 
@@ -1062,18 +1010,18 @@ mod tests {
 
         let task = TimerWheel::create_task(
             Duration::from_millis(50),
-            move || {
+            Some(CallbackWrapper::new(move || {
                 let counter = Arc::clone(&counter_clone);
                 async move {
                     counter.fetch_add(1, Ordering::SeqCst);
                 }
-            },
+            })),
         );
         let task_id = task.get_id();
         let handle = timer.register(task);
 
         // 推迟任务到 150ms
-        let postponed = timer.postpone(task_id, Duration::from_millis(150));
+        let postponed = timer.postpone(task_id, Duration::from_millis(150), None);
         assert!(postponed);
 
         // 等待原定时间 50ms，任务不应该触发
@@ -1103,26 +1051,26 @@ mod tests {
         // 创建任务，原始回调增加 1
         let task = TimerWheel::create_task(
             Duration::from_millis(50),
-            move || {
+            Some(CallbackWrapper::new(move || {
                 let counter = Arc::clone(&counter_clone1);
                 async move {
                     counter.fetch_add(1, Ordering::SeqCst);
                 }
-            },
+            })),
         );
         let task_id = task.get_id();
         let handle = timer.register(task);
 
         // 推迟任务并替换回调，新回调增加 10
-        let postponed = timer.postpone_with_callback(
+        let postponed = timer.postpone(
             task_id,
             Duration::from_millis(100),
-            move || {
+            Some(CallbackWrapper::new(move || {
                 let counter = Arc::clone(&counter_clone2);
                 async move {
                     counter.fetch_add(10, Ordering::SeqCst);
                 }
-            }
+            })),
         );
         assert!(postponed);
 
@@ -1145,11 +1093,11 @@ mod tests {
         let timer = TimerWheel::with_defaults();
         
         // 尝试推迟不存在的任务
-        let fake_task = TimerWheel::create_task(Duration::from_millis(50), || async {});
+        let fake_task = TimerWheel::create_task(Duration::from_millis(50), None);
         let fake_task_id = fake_task.get_id();
         // 不注册这个任务
         
-        let postponed = timer.postpone(fake_task_id, Duration::from_millis(100));
+        let postponed = timer.postpone(fake_task_id, Duration::from_millis(100), None);
         assert!(!postponed);
     }
 
@@ -1165,12 +1113,12 @@ mod tests {
             let counter_clone = Arc::clone(&counter);
             let task = TimerWheel::create_task(
                 Duration::from_millis(50),
-                move || {
+                Some(CallbackWrapper::new(move || {
                     let counter = Arc::clone(&counter_clone);
                     async move {
                         counter.fetch_add(1, Ordering::SeqCst);
                     }
-                },
+                })),
             );
             task_ids.push((task.get_id(), Duration::from_millis(150)));
             timer.register(task);
@@ -1203,7 +1151,7 @@ mod tests {
         for _ in 0..3 {
             let task = TimerWheel::create_task(
                 Duration::from_millis(50),
-                || async {},
+                None
             );
             task_ids.push(task.get_id());
             timer.register(task);
@@ -1214,12 +1162,12 @@ mod tests {
             .into_iter()
             .map(|id| {
                 let counter_clone = Arc::clone(&counter);
-                (id, Duration::from_millis(150), move || {
+                (id, Duration::from_millis(150), Some(CallbackWrapper::new(move || {
                     let counter = Arc::clone(&counter_clone);
                     async move {
                         counter.fetch_add(1, Ordering::SeqCst);
                     }
-                })
+                })))
             })
             .collect();
 
@@ -1247,18 +1195,18 @@ mod tests {
 
         let task = TimerWheel::create_task(
             Duration::from_millis(50),
-            move || {
+            Some(CallbackWrapper::new(move || {
                 let counter = Arc::clone(&counter_clone);
                 async move {
                     counter.fetch_add(1, Ordering::SeqCst);
                 }
-            },
+            })),
         );
         let task_id = task.get_id();
         let handle = timer.register(task);
 
         // 推迟任务
-        timer.postpone(task_id, Duration::from_millis(100));
+        timer.postpone(task_id, Duration::from_millis(100), None);
 
         // 验证原 completion_receiver 仍然有效（推迟后需要等待100ms，加上余量）
         let result = tokio::time::timeout(

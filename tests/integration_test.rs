@@ -1,7 +1,7 @@
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use kestrel_protocol_timer::TimerWheel;
+use kestrel_protocol_timer::{TimerWheel, CallbackWrapper};
 use futures::future;
 
 #[tokio::test]
@@ -23,12 +23,12 @@ async fn test_large_scale_timers() {
         let future = async move {
             let task = TimerWheel::create_task(
                 delay,
-                move || {
+                Some(CallbackWrapper::new(move || {
                     let counter = Arc::clone(&counter_clone);
                     async move {
                         counter.fetch_add(1, Ordering::SeqCst);
                     }
-                },
+                })),
             );
             timer_clone.register(task)
         };
@@ -61,12 +61,12 @@ async fn test_timer_precision() {
     let end_clone = Arc::clone(&end_time);
     let task = TimerWheel::create_task(
         Duration::from_millis(100),
-        move || {
+        Some(CallbackWrapper::new(move || {
             let end_time = Arc::clone(&end_clone);
             async move {
                 *end_time.lock() = Some(Instant::now());
             }
-        },
+        })),
     );
     let handle = timer.register(task);
 
@@ -107,12 +107,12 @@ async fn test_concurrent_operations() {
             let future = async move {
                 let task = TimerWheel::create_task(
                     Duration::from_millis(50),
-                    move || {
+                    Some(CallbackWrapper::new(move || {
                         let counter = Arc::clone(&counter_clone);
                         async move {
                             counter.fetch_add(1, Ordering::SeqCst);
                         }
-                    },
+                    })),
                 );
                 timer_clone.register(task)
             };
@@ -148,12 +148,12 @@ async fn test_timer_with_different_delays() {
         
         let task = TimerWheel::create_task(
             Duration::from_millis(delay_ms),
-            move || {
+            Some(CallbackWrapper::new(move || {
                 let results = Arc::clone(&results_clone);
                 async move {
                     results.lock().push((idx, delay_ms));
                 }
-            },
+            })),
         );
         let handle = timer.register(task);
         
@@ -186,7 +186,7 @@ async fn test_memory_efficiency() {
         let future = async move {
             let task = TimerWheel::create_task(
                 Duration::from_secs(10),
-                || async {},
+                None,
             );
             timer_clone.register(task)
         };
@@ -222,12 +222,12 @@ async fn test_batch_schedule() {
         .map(|i| {
             let counter_clone = Arc::clone(&counter);
             let delay = Duration::from_millis(50 + (i % 10) as u64);
-            let callback = move || {
+            let callback = Some(CallbackWrapper::new(move || {
                 let counter = Arc::clone(&counter_clone);
                 async move {
                     counter.fetch_add(1, Ordering::SeqCst);
                 }
-            };
+                }));
             (delay, callback)
         })
         .collect();
@@ -254,11 +254,8 @@ async fn test_batch_cancel() {
     const TIMER_COUNT: usize = 500;
     
     // 批量创建定时器
-    let callbacks: Vec<(Duration, _)> = (0..TIMER_COUNT)
-        .map(|_| {
-            let callback = || async {};
-            (Duration::from_secs(10), callback)
-        })
+    let callbacks: Vec<(Duration, Option<_>)> = (0..TIMER_COUNT)
+        .map(|_| (Duration::from_secs(10), None))
         .collect();
     
     let tasks = TimerWheel::create_batch(callbacks);
@@ -281,7 +278,7 @@ async fn test_batch_cancel_partial() {
     
     // 创建 10 个定时器
     let callbacks: Vec<(Duration, _)> = (0..10)
-        .map(|_| (Duration::from_millis(100), || async {}))
+        .map(|_| (Duration::from_millis(100), Some(CallbackWrapper::new(|| async {}))))
         .collect();
     
     let tasks = TimerWheel::create_batch(callbacks);
@@ -323,7 +320,7 @@ async fn test_batch_cancel_no_wait() {
     
     // 批量创建定时器
     let callbacks: Vec<(Duration, _)> = (0..100)
-        .map(|_| (Duration::from_secs(10), || async {}))
+        .map(|_| (Duration::from_secs(10), Some(CallbackWrapper::new(|| async {}))))
         .collect();
     
     let tasks = TimerWheel::create_batch(callbacks);
@@ -349,18 +346,18 @@ async fn test_postpone_single_timer() {
 
     let task = TimerWheel::create_task(
         Duration::from_millis(50),
-        move || {
+        Some(CallbackWrapper::new(move || {
             let counter = Arc::clone(&counter_clone);
             async move {
                 counter.fetch_add(1, Ordering::SeqCst);
             }
-        },
+        })),
     );
     let task_id = task.get_id();
     let handle = timer.register(task);
 
     // 推迟任务到 150ms
-    let postponed = timer.postpone(task_id, Duration::from_millis(150));
+    let postponed = timer.postpone(task_id, Duration::from_millis(150), None);
     assert!(postponed, "任务应该成功推迟");
 
     // 等待原定时间 50ms，任务不应该触发
@@ -389,26 +386,26 @@ async fn test_postpone_with_new_callback() {
     // 创建任务，原始回调增加 1
     let task = TimerWheel::create_task(
         Duration::from_millis(50),
-        move || {
+        Some(CallbackWrapper::new(move || {
             let counter = Arc::clone(&counter_clone1);
             async move {
                 counter.fetch_add(1, Ordering::SeqCst);
             }
-        },
+        })),
     );
     let task_id = task.get_id();
     let handle = timer.register(task);
 
     // 推迟任务并替换回调，新回调增加 10
-    let postponed = timer.postpone_with_callback(
+    let postponed = timer.postpone(
         task_id,
         Duration::from_millis(100),
-        move || {
+        Some(CallbackWrapper::new(move || {
             let counter = Arc::clone(&counter_clone2);
             async move {
                 counter.fetch_add(10, Ordering::SeqCst);
             }
-        }
+        })),
     );
     assert!(postponed, "任务应该成功推迟并替换回调");
 
@@ -436,12 +433,12 @@ async fn test_batch_postpone() {
         let counter_clone = Arc::clone(&counter);
         let task = TimerWheel::create_task(
             Duration::from_millis(50),
-            move || {
+            Some(CallbackWrapper::new(move || {
                 let counter = Arc::clone(&counter_clone);
                 async move {
                     counter.fetch_add(1, Ordering::SeqCst);
                 }
-            },
+            })),
         );
         task_ids.push((task.get_id(), Duration::from_millis(150)));
         timer.register(task);
@@ -475,7 +472,7 @@ async fn test_postpone_batch_with_callbacks() {
     for _ in 0..BATCH_SIZE {
         let task = TimerWheel::create_task(
             Duration::from_millis(50),
-            || async {},
+            None,
         );
         task_ids.push(task.get_id());
         timer.register(task);
@@ -486,12 +483,12 @@ async fn test_postpone_batch_with_callbacks() {
         .into_iter()
         .map(|id| {
             let counter = Arc::clone(&counter);
-            (id, Duration::from_millis(150), move || {
-                let counter = Arc::clone(&counter);
-                async move {
-                    counter.fetch_add(1, Ordering::SeqCst);
-                }
-            })
+                (id, Duration::from_millis(150), Some(CallbackWrapper::new(move || {
+                    let counter = Arc::clone(&counter);
+                    async move {
+                        counter.fetch_add(1, Ordering::SeqCst);
+                    }
+                })))
         })
         .collect();
 
@@ -520,28 +517,28 @@ async fn test_postpone_multiple_times() {
 
     let task = TimerWheel::create_task(
         Duration::from_millis(50),
-        move || {
+        Some(CallbackWrapper::new(move || {
             let counter = Arc::clone(&counter_clone);
             async move {
                 counter.fetch_add(1, Ordering::SeqCst);
             }
-        },
+        })),
     );
     let task_id = task.get_id();
     let handle = timer.register(task);
 
     // 第一次推迟到 100ms
-    assert!(timer.postpone(task_id, Duration::from_millis(100)));
+    assert!(timer.postpone(task_id, Duration::from_millis(100), None));
     tokio::time::sleep(Duration::from_millis(60)).await;
     assert_eq!(counter.load(Ordering::SeqCst), 0, "第一次推迟后不应触发");
 
     // 第二次推迟到 150ms
-    assert!(timer.postpone(task_id, Duration::from_millis(150)));
+    assert!(timer.postpone(task_id, Duration::from_millis(150), None));
     tokio::time::sleep(Duration::from_millis(60)).await;
     assert_eq!(counter.load(Ordering::SeqCst), 0, "第二次推迟后不应触发");
 
     // 第三次推迟到 100ms
-    assert!(timer.postpone(task_id, Duration::from_millis(100)));
+    assert!(timer.postpone(task_id, Duration::from_millis(100), None));
     
     // 等待最终触发
     let result = tokio::time::timeout(
@@ -564,18 +561,18 @@ async fn test_postpone_with_service() {
 
     let task = kestrel_protocol_timer::TimerService::create_task(
         Duration::from_millis(50),
-        move || {
+        Some(CallbackWrapper::new(move || {
             let counter = Arc::clone(&counter_clone);
             async move {
                 counter.fetch_add(1, Ordering::SeqCst);
             }
-        },
+        })),
     );
     let task_id = task.get_id();
     service.register(task).unwrap();
 
     // 推迟任务
-    let postponed = service.postpone_task(task_id, Duration::from_millis(150));
+    let postponed = service.postpone_task(task_id, Duration::from_millis(150), None);
     assert!(postponed, "任务应该成功推迟");
 
     // 等待原定时间，任务不应该触发

@@ -24,17 +24,20 @@ pub struct TaskId(u64);
 
 impl TaskId {
     /// 生成一个新的唯一任务 ID（内部使用）
+    #[inline]
     pub(crate) fn new() -> Self {
         TaskId(NEXT_TASK_ID.fetch_add(1, Ordering::Relaxed))
     }
 
     /// 获取任务 ID 的数值
+    #[inline]
     pub fn as_u64(&self) -> u64 {
         self.0
     }
 }
 
 impl Default for TaskId {
+    #[inline]
     fn default() -> Self {
         Self::new()
     }
@@ -78,8 +81,50 @@ where
     }
 }
 
-/// 回调包装器类型
-pub type CallbackWrapper = Arc<dyn TimerCallback>;
+/// 回调包装器，用于规范化创建和管理回调
+/// 
+/// # 示例
+/// 
+/// ```
+/// use kestrel_protocol_timer::CallbackWrapper;
+/// 
+/// let callback = CallbackWrapper::new(|| async {
+///     println!("Timer callback executed!");
+/// });
+/// ```
+#[derive(Clone)]
+pub struct CallbackWrapper {
+    callback: Arc<dyn TimerCallback>,
+}
+
+impl CallbackWrapper {
+    /// 创建新的回调包装器
+    /// 
+    /// # 参数
+    /// - `callback`: 实现了 TimerCallback trait 的回调对象
+    /// 
+    /// # 示例
+    /// 
+    /// ```
+    /// use kestrel_protocol_timer::CallbackWrapper;
+    /// 
+    /// let callback = CallbackWrapper::new(|| async {
+    ///     println!("Timer fired!");
+    /// });
+    /// ```
+    #[inline]
+    pub fn new(callback: impl TimerCallback) -> Self {
+        Self {
+            callback: Arc::new(callback),
+        }
+    }
+
+    /// 调用回调函数
+    #[inline]
+    pub(crate) fn call(&self) -> Pin<Box<dyn Future<Output = ()> + Send>> {
+        self.callback.call()
+    }
+}
 
 /// 完成通知器，用于在任务完成时发送通知
 pub struct CompletionNotifier(pub oneshot::Sender<TaskCompletionReason>);
@@ -110,28 +155,15 @@ pub struct TimerTask {
 }
 
 impl TimerTask {
-    /// 创建新的定时器任务
+    /// 创建新的定时器任务（内部使用）
     /// 
     /// # 参数
     /// - `delay`: 延迟时间
     /// - `callback`: 回调函数（可选）
     /// 
-    /// # 示例
-    /// ```no_run
-    /// use kestrel_protocol_timer::TimerTask;
-    /// use std::time::Duration;
-    /// use std::sync::Arc;
-    /// 
-    /// // 创建带回调的任务
-    /// let callback = Arc::new(|| async {
-    ///     println!("Timer fired!");
-    /// });
-    /// let task = TimerTask::new(Duration::from_secs(1), Some(callback));
-    /// 
-    /// // 创建仅通知的任务
-    /// let task = TimerTask::new(Duration::from_secs(1), None);
-    /// ```
-    pub fn new(delay: std::time::Duration, callback: Option<CallbackWrapper>) -> Self {
+    /// # 注意
+    /// 这是内部方法，用户应该使用 `TimerWheel::create_task()` 或 `TimerService::create_task()` 创建任务。
+    pub(crate) fn new(delay: std::time::Duration, callback: Option<CallbackWrapper>) -> Self {
         Self {
             id: TaskId::new(),
             delay,
@@ -146,10 +178,10 @@ impl TimerTask {
     /// 
     /// # 示例
     /// ```no_run
-    /// use kestrel_protocol_timer::TimerTask;
+    /// use kestrel_protocol_timer::TimerWheel;
     /// use std::time::Duration;
     /// 
-    /// let task = TimerTask::new(Duration::from_secs(1), None);
+    /// let task = TimerWheel::create_task(Duration::from_secs(1), None);
     /// let task_id = task.get_id();
     /// println!("Task ID: {:?}", task_id);
     /// ```
@@ -170,8 +202,9 @@ impl TimerTask {
     }
 
     /// 获取回调函数的克隆（如果存在）
+    #[inline]
     pub(crate) fn get_callback(&self) -> Option<CallbackWrapper> {
-        self.callback.as_ref().map(Arc::clone)
+        self.callback.clone()
     }
 }
 

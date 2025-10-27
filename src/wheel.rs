@@ -431,7 +431,7 @@ impl Wheel {
     /// 批量推迟定时器任务
     ///
     /// # 参数
-    /// - `updates`: (任务ID, 新延迟, 新回调) 的元组列表
+    /// - `updates`: (任务ID, 新延迟) 的元组列表
     ///
     /// # 返回
     /// 成功推迟的任务数量
@@ -441,6 +441,28 @@ impl Wheel {
     /// - 按新槽位分组优化插入
     #[inline]
     pub fn postpone_batch(
+        &mut self,
+        updates: Vec<(TaskId, Duration)>,
+    ) -> usize {
+        let mut postponed_count = 0;
+        
+        for (task_id, new_delay) in updates {
+            if self.postpone(task_id, new_delay, None) {
+                postponed_count += 1;
+            }
+        }
+        
+        postponed_count
+    }
+
+    /// 批量推迟定时器任务（替换回调）
+    ///
+    /// # 参数
+    /// - `updates`: (任务ID, 新延迟, 新回调) 的元组列表
+    ///
+    /// # 返回
+    /// 成功推迟的任务数量
+    pub fn postpone_batch_with_callbacks(
         &mut self,
         updates: Vec<(TaskId, Duration, Option<crate::task::CallbackWrapper>)>,
     ) -> usize {
@@ -459,6 +481,7 @@ impl Wheel {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::task::CallbackWrapper;
 
     #[test]
     fn test_wheel_creation() {
@@ -492,7 +515,6 @@ mod tests {
 
     #[test]
     fn test_insert_batch() {
-        use std::sync::Arc;
         use crate::task::{TimerTask, CompletionNotifier};
         
         let mut wheel = Wheel::new(WheelConfig::default());
@@ -500,7 +522,7 @@ mod tests {
         // 创建批量任务
         let tasks: Vec<(Duration, TimerTask, CompletionNotifier)> = (0..10)
             .map(|i| {
-                let callback = Arc::new(|| async {}) as Arc<dyn crate::task::TimerCallback>;
+                let callback = CallbackWrapper::new(|| async {});
                 let (completion_tx, _completion_rx) = tokio::sync::oneshot::channel();
                 let notifier = CompletionNotifier(completion_tx);
                 let task = TimerTask::new(Duration::from_millis(100 + i * 10), Some(callback));
@@ -516,7 +538,6 @@ mod tests {
 
     #[test]
     fn test_cancel_batch() {
-        use std::sync::Arc;
         use crate::task::{TimerTask, CompletionNotifier};
         
         let mut wheel = Wheel::new(WheelConfig::default());
@@ -524,7 +545,7 @@ mod tests {
         // 插入多个任务
         let mut task_ids = Vec::new();
         for i in 0..10 {
-            let callback = Arc::new(|| async {}) as Arc<dyn crate::task::TimerCallback>;
+            let callback = CallbackWrapper::new(|| async {});
             let (completion_tx, _completion_rx) = tokio::sync::oneshot::channel();
             let notifier = CompletionNotifier(completion_tx);
             let task = TimerTask::new(Duration::from_millis(100 + i * 10), Some(callback));
@@ -554,7 +575,6 @@ mod tests {
 
     #[test]
     fn test_batch_operations_same_slot() {
-        use std::sync::Arc;
         use crate::task::{TimerTask, CompletionNotifier};
         
         let mut wheel = Wheel::new(WheelConfig::default());
@@ -562,7 +582,7 @@ mod tests {
         // 插入多个相同延迟的任务（会进入同一个槽位）
         let mut task_ids = Vec::new();
         for _ in 0..20 {
-            let callback = Arc::new(|| async {}) as Arc<dyn crate::task::TimerCallback>;
+            let callback = CallbackWrapper::new(|| async {});
             let (completion_tx, _completion_rx) = tokio::sync::oneshot::channel();
             let notifier = CompletionNotifier(completion_tx);
             let task = TimerTask::new(Duration::from_millis(100), Some(callback));
@@ -578,13 +598,12 @@ mod tests {
 
     #[test]
     fn test_postpone_single_task() {
-        use std::sync::Arc;
         use crate::task::{TimerTask, CompletionNotifier};
         
         let mut wheel = Wheel::new(WheelConfig::default());
         
         // 插入任务，延迟 100ms
-        let callback = Arc::new(|| async {}) as Arc<dyn crate::task::TimerCallback>;
+        let callback = CallbackWrapper::new(|| async {});
         let (completion_tx, _completion_rx) = tokio::sync::oneshot::channel();
         let notifier = CompletionNotifier(completion_tx);
         let task = TimerTask::new(Duration::from_millis(100), Some(callback));
@@ -619,21 +638,20 @@ mod tests {
 
     #[test]
     fn test_postpone_with_new_callback() {
-        use std::sync::Arc;
         use crate::task::{TimerTask, CompletionNotifier};
         
         let mut wheel = Wheel::new(WheelConfig::default());
         
         // 插入任务，带原始回调
-        let old_callback = Arc::new(|| async {}) as Arc<dyn crate::task::TimerCallback>;
+        let old_callback = CallbackWrapper::new(|| async {});
         let (completion_tx, _completion_rx) = tokio::sync::oneshot::channel();
         let notifier = CompletionNotifier(completion_tx);
         let task = TimerTask::new(Duration::from_millis(100), Some(old_callback.clone()));
         let task_id = wheel.insert(Duration::from_millis(100), task, notifier);
         
         // 推迟任务并替换回调
-        let new_callback = Arc::new(|| async {}) as Arc<dyn crate::task::TimerCallback>;
-        let postponed = wheel.postpone(task_id, Duration::from_millis(50), Some(new_callback.clone()));
+        let new_callback = CallbackWrapper::new(|| async {});
+        let postponed = wheel.postpone(task_id, Duration::from_millis(50), Some(new_callback));
         assert!(postponed);
         
         // 推进 50ms（5 ticks），任务应该触发
@@ -663,7 +681,6 @@ mod tests {
 
     #[test]
     fn test_postpone_batch() {
-        use std::sync::Arc;
         use crate::task::{TimerTask, CompletionNotifier};
         
         let mut wheel = Wheel::new(WheelConfig::default());
@@ -671,7 +688,7 @@ mod tests {
         // 插入 5 个任务
         let mut task_ids = Vec::new();
         for _ in 0..5 {
-            let callback = Arc::new(|| async {}) as Arc<dyn crate::task::TimerCallback>;
+            let callback = CallbackWrapper::new(|| async {});
             let (completion_tx, _completion_rx) = tokio::sync::oneshot::channel();
             let notifier = CompletionNotifier(completion_tx);
             let task = TimerTask::new(Duration::from_millis(50), Some(callback));
@@ -682,7 +699,7 @@ mod tests {
         // 批量推迟所有任务到 150ms
         let updates: Vec<_> = task_ids
             .iter()
-            .map(|&id| (id, Duration::from_millis(150), None))
+            .map(|&id| (id, Duration::from_millis(150)))
             .collect();
         let postponed_count = wheel.postpone_batch(updates);
         assert_eq!(postponed_count, 5);
@@ -704,7 +721,6 @@ mod tests {
 
     #[test]
     fn test_postpone_batch_partial() {
-        use std::sync::Arc;
         use crate::task::{TimerTask, CompletionNotifier};
         
         let mut wheel = Wheel::new(WheelConfig::default());
@@ -712,7 +728,7 @@ mod tests {
         // 插入 10 个任务
         let mut task_ids = Vec::new();
         for _ in 0..10 {
-            let callback = Arc::new(|| async {}) as Arc<dyn crate::task::TimerCallback>;
+            let callback = CallbackWrapper::new(|| async {});
             let (completion_tx, _completion_rx) = tokio::sync::oneshot::channel();
             let notifier = CompletionNotifier(completion_tx);
             let task = TimerTask::new(Duration::from_millis(50), Some(callback));
@@ -724,9 +740,9 @@ mod tests {
         let fake_task_id = TaskId::new();
         let mut updates: Vec<_> = task_ids[0..5]
             .iter()
-            .map(|&id| (id, Duration::from_millis(150), None))
+            .map(|&id| (id, Duration::from_millis(150)))
             .collect();
-        updates.push((fake_task_id, Duration::from_millis(150), None));
+        updates.push((fake_task_id, Duration::from_millis(150)));
         
         let postponed_count = wheel.postpone_batch(updates);
         assert_eq!(postponed_count, 5); // 只有 5 个成功，fake_task_id 失败

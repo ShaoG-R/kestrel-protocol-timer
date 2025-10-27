@@ -12,25 +12,27 @@
 //! ## 快速开始
 //!
 //! ```no_run
-//! use kestrel_protocol_timer::{TimerWheel, TimerTask};
+//! use kestrel_protocol_timer::{TimerWheel, CallbackWrapper};
 //! use std::time::Duration;
+//! use std::sync::Arc;
 //!
 //! #[tokio::main]
 //! async fn main() -> Result<(), Box<dyn std::error::Error>> {
 //!     // 创建定时器管理器
 //!     let timer = TimerWheel::with_defaults();
 //!     
-//!     // 步骤 1: 创建定时器任务
-//!     let task = TimerWheel::create_task(Duration::from_secs(1), || async {
+//!     // 步骤 1: 创建定时器任务（使用回调）
+//!     let callback = Some(CallbackWrapper::new(|| async {
 //!         println!("Timer fired after 1 second!");
-//!     });
+//!     }));
+//!     let task = TimerWheel::create_task(Duration::from_secs(1), callback);
 //!     let task_id = task.get_id();
 //!     
-//!     // 步骤 2: 注册定时器任务
+//!     // 步骤 2: 注册定时器任务并获取完成通知
 //!     let handle = timer.register(task);
 //!     
-//!     // 等待定时器触发
-//!     tokio::time::sleep(Duration::from_secs(2)).await;
+//!     // 等待定时器完成
+//!     handle.into_completion_receiver().0.await?;
 //!     Ok(())
 //! }
 //! ```
@@ -88,12 +90,12 @@ mod tests {
 
         let task = TimerWheel::create_task(
             Duration::from_millis(50),
-            move || {
+            Some(CallbackWrapper::new(move || {
                 let counter =  Arc::clone(&counter_clone);
                 async move {
                     counter.fetch_add(1, Ordering::SeqCst);
                 }
-            },
+            })),
         );
         timer.register(task);
 
@@ -111,12 +113,12 @@ mod tests {
             let counter_clone = Arc::clone(&counter);
             let task = TimerWheel::create_task(
                 Duration::from_millis(10 * (i + 1)),
-                move || {
+                Some(CallbackWrapper::new(move || {
                     let counter = Arc::clone(&counter_clone);
                     async move {
                         counter.fetch_add(1, Ordering::SeqCst);
                     }
-                },
+                })),
             );
             timer.register(task);
         }
@@ -136,12 +138,12 @@ mod tests {
             let counter_clone = Arc::clone(&counter);
             let task = TimerWheel::create_task(
                 Duration::from_millis(100),
-                move || {
+                Some(CallbackWrapper::new(move || {
                     let counter = Arc::clone(&counter_clone);
                     async move {
                         counter.fetch_add(1, Ordering::SeqCst);
                     }
-                },
+                })),
             );
             let handle = timer.register(task);
             handles.push(handle);
@@ -166,12 +168,12 @@ mod tests {
 
         let task = TimerWheel::create_task(
             Duration::from_millis(50),
-            move || {
+            Some(CallbackWrapper::new(move || {
                 let counter = Arc::clone(&counter_clone);
                 async move {
                     counter.fetch_add(1, Ordering::SeqCst);
                 }
-            },
+            })),
         );
         let handle = timer.register(task);
 
@@ -200,17 +202,17 @@ mod tests {
         let counter = Arc::new(AtomicU32::new(0));
 
         // 创建批量回调
-        let callbacks: Vec<(Duration, _)> = (0..5)
+        let callbacks: Vec<(Duration, Option<CallbackWrapper>)> = (0..5)
             .map(|i| {
                 let counter = Arc::clone(&counter);
                 let delay = Duration::from_millis(50 + i * 10);
-                let callback = move || {
+                let callback = CallbackWrapper::new(move || {
                     let counter = Arc::clone(&counter);
                     async move {
                         counter.fetch_add(1, Ordering::SeqCst);
                     }
-                };
-                (delay, callback)
+                });
+                (delay, Some(callback))
             })
             .collect();
 
