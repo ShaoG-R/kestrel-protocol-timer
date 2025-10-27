@@ -702,11 +702,12 @@ impl TimerWheel {
         wheel.cancel_batch(task_ids)
     }
 
-    /// 推迟定时器（保持原回调）
+    /// 推迟定时器
     ///
     /// # 参数
     /// - `task_id`: 要推迟的任务 ID
     /// - `new_delay`: 新的延迟时间（从当前时间点重新计算）
+    /// - `callback`: 新的回调函数，传入 `None` 保持原回调不变，传入 `Some` 替换为新回调
     ///
     /// # 返回
     /// 如果任务存在且成功推迟返回 true，否则返回 false
@@ -714,9 +715,10 @@ impl TimerWheel {
     /// # 注意
     /// - 推迟后任务 ID 保持不变
     /// - 原有的 completion_receiver 仍然有效
-    /// - 保持原回调函数不变
     ///
     /// # 示例
+    ///
+    /// ## 保持原回调
     /// ```no_run
     /// use kestrel_protocol_timer::{TimerWheel, TimerTask, CallbackWrapper};
     /// use std::time::Duration;
@@ -732,9 +734,30 @@ impl TimerWheel {
     ///     let task_id = task.get_id();
     ///     let _handle = timer.register(task);
     ///     
-    ///     // 推迟到 10 秒后触发
+    ///     // 推迟到 10 秒后触发（保持原回调）
+    ///     let success = timer.postpone(task_id, Duration::from_secs(10), None);
+    ///     println!("推迟成功: {}", success);
+    /// }
+    /// ```
+    ///
+    /// ## 替换为新回调
+    /// ```no_run
+    /// use kestrel_protocol_timer::{TimerWheel, TimerTask, CallbackWrapper};
+    /// use std::time::Duration;
+    ///
+    /// #[tokio::main]
+    /// async fn main() {
+    ///     let timer = TimerWheel::with_defaults();
+    ///     
+    ///     let task = TimerWheel::create_task(Duration::from_secs(5), Some(CallbackWrapper::new(|| async {
+    ///         println!("Original callback!");
+    ///     })));
+    ///     let task_id = task.get_id();
+    ///     let _handle = timer.register(task);
+    ///     
+    ///     // 推迟到 10 秒后触发（并替换为新回调）
     ///     let success = timer.postpone(task_id, Duration::from_secs(10), Some(CallbackWrapper::new(|| async {
-    ///         println!("Timer fired!");
+    ///         println!("New callback!");
     ///     })));
     ///     println!("推迟成功: {}", success);
     /// }
@@ -758,23 +781,33 @@ impl TimerWheel {
     /// # 返回
     /// 成功推迟的任务数量
     ///
+    /// # 注意
+    /// - 此方法会保持所有任务的原回调不变
+    /// - 如需替换回调，请使用 `postpone_batch_with_callbacks`
+    ///
     /// # 性能优势
     /// - 批量处理减少锁竞争
     /// - 内部优化批量推迟操作
     ///
     /// # 示例
     /// ```no_run
-    /// use kestrel_protocol_timer::{TimerWheel, TimerTask};
+    /// use kestrel_protocol_timer::{TimerWheel, TimerTask, CallbackWrapper};
     /// use std::time::Duration;
     ///
     /// #[tokio::main]
     /// async fn main() {
     ///     let timer = TimerWheel::with_defaults();
     ///     
-    ///     // 创建多个定时器
-    ///     let task1 = TimerWheel::create_task(Duration::from_secs(5), None);
-    ///     let task2 = TimerWheel::create_task(Duration::from_secs(5), None);
-    ///     let task3 = TimerWheel::create_task(Duration::from_secs(5), None);
+    ///     // 创建多个带回调的定时器
+    ///     let task1 = TimerWheel::create_task(Duration::from_secs(5), Some(CallbackWrapper::new(|| async {
+    ///         println!("Task 1 fired!");
+    ///     })));
+    ///     let task2 = TimerWheel::create_task(Duration::from_secs(5), Some(CallbackWrapper::new(|| async {
+    ///         println!("Task 2 fired!");
+    ///     })));
+    ///     let task3 = TimerWheel::create_task(Duration::from_secs(5), Some(CallbackWrapper::new(|| async {
+    ///         println!("Task 3 fired!");
+    ///     })));
     ///     
     ///     let task_ids = vec![
     ///         (task1.get_id(), Duration::from_secs(10)),
@@ -786,7 +819,7 @@ impl TimerWheel {
     ///     timer.register(task2);
     ///     timer.register(task3);
     ///     
-    ///     // 批量推迟
+    ///     // 批量推迟（保持原回调）
     ///     let postponed = timer.postpone_batch(&task_ids);
     ///     println!("已推迟 {} 个定时器", postponed);
     /// }

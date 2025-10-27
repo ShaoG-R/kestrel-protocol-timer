@@ -35,7 +35,6 @@ enum ServiceCommand {
 /// ```no_run
 /// use kestrel_protocol_timer::{TimerWheel, TimerService, CallbackWrapper};
 /// use std::time::Duration;
-/// 
 ///
 /// #[tokio::main]
 /// async fn main() {
@@ -44,7 +43,12 @@ enum ServiceCommand {
 ///     
 ///     // 使用两步式 API 通过 service 批量调度定时器
 ///     let callbacks: Vec<(Duration, Option<CallbackWrapper>)> = (0..5)
-///         .map(|_| (Duration::from_millis(100), Some(CallbackWrapper::new(|| async {}))))
+///         .map(|i| {
+///             let callback = Some(CallbackWrapper::new(move || async move {
+///                 println!("Timer {} fired!", i);
+///             }));
+///             (Duration::from_millis(100), callback)
+///         })
 ///         .collect();
 ///     let tasks = TimerService::create_batch(callbacks);
 ///     service.register_batch(tasks).unwrap();
@@ -154,7 +158,9 @@ impl TimerService {
     /// let service = timer.create_service();
     /// 
     /// // 使用两步式 API 调度定时器
-    /// let callback = Some(CallbackWrapper::new(|| async {}));
+    /// let callback = Some(CallbackWrapper::new(|| async move {
+    ///     println!("Timer fired!");
+    /// }));
     /// let task = TimerService::create_task(Duration::from_secs(10), callback);
     /// let task_id = task.get_id();
     /// service.register(task).unwrap();
@@ -193,7 +199,12 @@ impl TimerService {
     /// let service = timer.create_service();
     /// 
     /// let callbacks: Vec<(Duration, Option<CallbackWrapper>)> = (0..10)
-    ///     .map(|_| (Duration::from_secs(10), Some(CallbackWrapper::new(|| async {}))))
+    ///     .map(|i| {
+    ///         let callback = Some(CallbackWrapper::new(move || async move {
+    ///             println!("Timer {} fired!", i);
+    ///         }));
+    ///         (Duration::from_secs(10), callback)
+    ///     })
     ///     .collect();
     /// let tasks = TimerService::create_batch(callbacks);
     /// let task_ids: Vec<_> = tasks.iter().map(|t| t.get_id()).collect();
@@ -284,13 +295,18 @@ impl TimerService {
     /// let service = timer.create_service();
     /// 
     /// let callbacks: Vec<(Duration, Option<CallbackWrapper>)> = (0..3)
-    ///     .map(|_| (Duration::from_secs(5), Some(CallbackWrapper::new(|| async {}))))
+    ///     .map(|i| {
+    ///         let callback = Some(CallbackWrapper::new(move || async move {
+    ///             println!("Timer {} fired!", i);
+    ///         }));
+    ///         (Duration::from_secs(5), callback)
+    ///     })
     ///     .collect();
     /// let tasks = TimerService::create_batch(callbacks);
     /// let task_ids: Vec<_> = tasks.iter().map(|t| t.get_id()).collect();
     /// service.register_batch(tasks).unwrap();
     /// 
-    /// // 批量推迟
+    /// // 批量推迟（保持原回调）
     /// let updates: Vec<_> = task_ids
     ///     .into_iter()
     ///     .map(|id| (id, Duration::from_secs(10)))
@@ -327,6 +343,7 @@ impl TimerService {
     /// let timer = TimerWheel::with_defaults();
     /// let service = timer.create_service();
     /// 
+    /// // 创建 3 个任务，初始没有回调
     /// let callbacks: Vec<(Duration, Option<CallbackWrapper>)> = (0..3)
     ///     .map(|_| (Duration::from_secs(5), None))
     ///     .collect();
@@ -334,7 +351,7 @@ impl TimerService {
     /// let task_ids: Vec<_> = tasks.iter().map(|t| t.get_id()).collect();
     /// service.register_batch(tasks).unwrap();
     /// 
-    /// // 批量推迟并替换回调
+    /// // 批量推迟并添加新回调
     /// let updates: Vec<_> = task_ids
     ///     .into_iter()
     ///     .enumerate()
@@ -458,7 +475,7 @@ impl TimerService {
     /// let timer = TimerWheel::with_defaults();
     /// let service = timer.create_service();
     /// 
-    /// let callback = Some(CallbackWrapper::new(|| async {
+    /// let callback = Some(CallbackWrapper::new(|| async move {
     ///     println!("Timer fired!");
     /// }));
     /// let task = TimerService::create_task(Duration::from_millis(100), callback);
@@ -510,7 +527,12 @@ impl TimerService {
     /// let service = timer.create_service();
     /// 
     /// let callbacks: Vec<(Duration, Option<CallbackWrapper>)> = (0..3)
-    ///     .map(|_| (Duration::from_secs(1), Some(CallbackWrapper::new(|| async {}))))
+    ///     .map(|i| {
+    ///         let callback = Some(CallbackWrapper::new(move || async move {
+    ///             println!("Timer {} fired!", i);
+    ///         }));
+    ///         (Duration::from_secs(1), callback)
+    ///     })
     ///     .collect();
     /// let tasks = TimerService::create_batch(callbacks);
     /// 
@@ -899,7 +921,7 @@ mod tests {
         let mut service = timer.create_service();
 
         // 直接通过 service 调度仅通知的定时器（无回调）
-        let task = crate::task::TimerTask::new(Duration::from_millis(50), None);
+        let task = TimerService::create_task(Duration::from_millis(50), None);
         let task_id = task.get_id();
         service.register(task).unwrap();
 
@@ -1273,6 +1295,76 @@ mod tests {
         // 验证没有其他通知（特别是被取消的任务不应该有通知）
         let no_more = tokio::time::timeout(Duration::from_millis(50), rx.recv()).await;
         assert!(no_more.is_err(), "Should not receive any more notifications");
+    }
+
+    #[tokio::test]
+    async fn test_take_receiver_twice() {
+        let timer = TimerWheel::with_defaults();
+        let mut service = timer.create_service();
+
+        // 第一次调用应该返回 Some
+        let rx1 = service.take_receiver();
+        assert!(rx1.is_some(), "First take_receiver should return Some");
+
+        // 第二次调用应该返回 None
+        let rx2 = service.take_receiver();
+        assert!(rx2.is_none(), "Second take_receiver should return None");
+    }
+
+    #[tokio::test]
+    async fn test_postpone_batch_without_callbacks() {
+        let timer = TimerWheel::with_defaults();
+        let mut service = timer.create_service();
+        let counter = Arc::new(AtomicU32::new(0));
+
+        // 注册 3 个任务，有原始回调
+        let mut task_ids = Vec::new();
+        for _ in 0..3 {
+            let counter_clone = Arc::clone(&counter);
+            let task = TimerService::create_task(
+                Duration::from_millis(50),
+                Some(CallbackWrapper::new(move || {
+                    let counter = Arc::clone(&counter_clone);
+                    async move {
+                        counter.fetch_add(1, Ordering::SeqCst);
+                    }
+                })),
+            );
+            task_ids.push(task.get_id());
+            service.register(task).unwrap();
+        }
+
+        // 批量推迟，不替换回调
+        let updates: Vec<_> = task_ids
+            .iter()
+            .map(|&id| (id, Duration::from_millis(150)))
+            .collect();
+        let postponed = service.postpone_batch(updates);
+        assert_eq!(postponed, 3, "All 3 tasks should be postponed");
+
+        // 等待原定时间 50ms，任务不应该触发
+        tokio::time::sleep(Duration::from_millis(70)).await;
+        assert_eq!(counter.load(Ordering::SeqCst), 0, "Callbacks should not fire yet");
+
+        // 接收所有超时通知
+        let mut received_count = 0;
+        let mut rx = service.take_receiver().unwrap();
+        
+        while received_count < 3 {
+            match tokio::time::timeout(Duration::from_millis(200), rx.recv()).await {
+                Ok(Some(_task_id)) => {
+                    received_count += 1;
+                }
+                Ok(None) => break,
+                Err(_) => break,
+            }
+        }
+
+        assert_eq!(received_count, 3, "Should receive 3 timeout notifications");
+        
+        // 等待回调执行
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        assert_eq!(counter.load(Ordering::SeqCst), 3, "All callbacks should execute");
     }
 }
 
