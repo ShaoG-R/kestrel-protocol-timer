@@ -440,7 +440,7 @@ fn bench_postpone_single(c: &mut Criterion) {
                 let start = std::time::Instant::now();
                 
                 let result = black_box(
-                    service.postpone_task(task_id, Duration::from_millis(200), None)
+                    service.postpone(task_id, Duration::from_millis(200), None)
                 );
                 
                 total_duration += start.elapsed();
@@ -530,7 +530,7 @@ fn bench_postpone_with_callback(c: &mut Criterion) {
                 
                 let counter_clone = Arc::clone(&counter);
                 let result = black_box(
-                    service.postpone_task_with_callback(
+                    service.postpone(
                         task_id,
                         Duration::from_millis(200),
                         Some(CallbackWrapper::new(move || {

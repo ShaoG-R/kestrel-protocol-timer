@@ -216,52 +216,6 @@ impl TimerService {
         wheel.cancel_batch(task_ids)
     }
 
-    /// 推迟任务（保持原回调）
-    ///
-    /// # 参数
-    /// - `task_id`: 要推迟的任务 ID
-    /// - `new_delay`: 新的延迟时间（从当前时间点重新计算）
-    ///
-    /// # 返回
-    /// - `true`: 任务存在且成功推迟
-    /// - `false`: 任务不存在或推迟失败
-    ///
-    /// # 性能说明
-    /// 此方法使用直接推迟优化，不需要等待 Actor 处理，大幅降低延迟
-    ///
-    /// # 注意
-    /// - 推迟后任务 ID 保持不变
-    /// - 原有的超时通知仍然有效
-    /// - 保持原回调函数不变
-    ///
-    /// # 示例
-    /// ```no_run
-    /// # use kestrel_protocol_timer::{TimerWheel, TimerService, CallbackWrapper};
-    /// # use std::time::Duration;
-    /// # 
-    /// # #[tokio::main]
-    /// # async fn main() {
-    /// let timer = TimerWheel::with_defaults();
-    /// let service = timer.create_service();
-    /// 
-    /// let callback = Some(CallbackWrapper::new(|| async {}));
-    /// let task = TimerService::create_task(Duration::from_secs(5), callback.clone());
-    /// let task_id = task.get_id();
-    /// service.register(task).unwrap();
-    /// 
-    /// // 推迟到 10 秒后触发
-    /// let success = service.postpone_task(task_id, Duration::from_secs(10), callback);
-    /// println!("推迟成功: {}", success);
-    /// # }
-    /// ```
-    #[inline]
-    pub fn postpone_task(&self, task_id: TaskId, new_delay: Duration, callback: Option<CallbackWrapper>) -> bool {
-        // 优化：直接推迟任务，无需通知 Actor
-        // FuturesUnordered 会继续监听原有的 completion_receiver
-        let mut wheel = self.wheel.lock();
-        wheel.postpone(task_id, new_delay, callback)
-    }
-
     /// 推迟任务（替换回调）
     ///
     /// # 参数
@@ -297,7 +251,7 @@ impl TimerService {
     /// 
     /// // 推迟并替换回调
     /// let new_callback = Some(CallbackWrapper::new(|| async { println!("New callback!"); }));
-    /// let success = service.postpone_task_with_callback(
+    /// let success = service.postpone(
     ///     task_id,
     ///     Duration::from_secs(10),
     ///     new_callback
@@ -306,13 +260,7 @@ impl TimerService {
     /// # }
     /// ```
     #[inline]
-    pub fn postpone_task_with_callback(
-        &self,
-        task_id: TaskId,
-        new_delay: Duration,
-        callback: Option<CallbackWrapper>,
-    ) -> bool
-    {
+    pub fn postpone(&self, task_id: TaskId, new_delay: Duration, callback: Option<CallbackWrapper>) -> bool {
         let mut wheel = self.wheel.lock();
         wheel.postpone(task_id, new_delay, callback)
     }
@@ -1072,49 +1020,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_postpone_task() {
-        let timer = TimerWheel::with_defaults();
-        let mut service = timer.create_service();
-        let counter = Arc::new(AtomicU32::new(0));
-
-        // 注册一个任务，延迟 50ms
-        let counter_clone = Arc::clone(&counter);
-        let task = TimerService::create_task(
-            Duration::from_millis(50),
-            Some(CallbackWrapper::new(move || {
-                let counter = Arc::clone(&counter_clone);
-                async move {
-                    counter.fetch_add(1, Ordering::SeqCst);
-                }
-            })),
-        );
-        let task_id = task.get_id();
-        service.register(task).unwrap();
-
-        // 推迟任务到 150ms
-        let postponed = service.postpone_task(task_id, Duration::from_millis(150), None);
-        assert!(postponed, "Task should be postponed successfully");
-
-        // 等待原定时间 50ms，任务不应该触发
-        tokio::time::sleep(Duration::from_millis(70)).await;
-        assert_eq!(counter.load(Ordering::SeqCst), 0);
-
-        // 接收超时通知（从推迟开始算，还需要等待约 150ms）
-        let mut rx = service.take_receiver().unwrap();
-        let received_task_id = tokio::time::timeout(Duration::from_millis(200), rx.recv())
-            .await
-            .expect("Should receive timeout notification")
-            .expect("Should receive Some value");
-
-        assert_eq!(received_task_id, task_id);
-        
-        // 等待回调执行
-        tokio::time::sleep(Duration::from_millis(20)).await;
-        assert_eq!(counter.load(Ordering::SeqCst), 1);
-    }
-
-    #[tokio::test]
-    async fn test_postpone_task_with_callback() {
+    async fn test_postpone() {
         let timer = TimerWheel::with_defaults();
         let mut service = timer.create_service();
         let counter = Arc::new(AtomicU32::new(0));
@@ -1135,7 +1041,7 @@ mod tests {
 
         // 推迟任务并替换回调，新回调增加 10
         let counter_clone2 = Arc::clone(&counter);
-        let postponed = service.postpone_task_with_callback(
+        let postponed = service.postpone(
             task_id,
             Duration::from_millis(100),
             Some(CallbackWrapper::new(move || {
@@ -1173,7 +1079,7 @@ mod tests {
         let fake_task_id = fake_task.get_id();
         // 不注册这个任务
         
-        let postponed = service.postpone_task(fake_task_id, Duration::from_millis(100), None);
+        let postponed = service.postpone(fake_task_id, Duration::from_millis(100), None);
         assert!(!postponed, "Nonexistent task should not be postponed");
     }
 
@@ -1320,7 +1226,7 @@ mod tests {
         service.register(task).unwrap();
 
         // 推迟任务
-        service.postpone_task(task_id, Duration::from_millis(100), None);
+        service.postpone(task_id, Duration::from_millis(100), None);
 
         // 验证超时通知仍然有效（推迟后需要等待100ms，加上余量）
         let mut rx = service.take_receiver().unwrap();

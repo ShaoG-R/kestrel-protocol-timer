@@ -94,7 +94,7 @@
 ## 快速开始
 
 ```rust
-use kestrel_protocol_timer::TimerWheel;
+use kestrel_protocol_timer::{TimerWheel, CallbackWrapper};
 use std::time::Duration;
 
 #[tokio::main]
@@ -103,9 +103,10 @@ async fn main() {
     let timer = TimerWheel::with_defaults();
     
     // 两步式 API：创建任务 + 注册
-    let task = TimerWheel::create_task(Duration::from_secs(1), || async {
+    let callback = Some(CallbackWrapper::new(|| async {
         println!("定时器触发！");
-    });
+    }));
+    let task = TimerWheel::create_task(Duration::from_secs(1), callback);
     let handle = timer.register(task);
     
     // 等待定时器完成
@@ -288,22 +289,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 ```rust
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
+use kestrel_protocol_timer::CallbackWrapper;
 
 let timer = TimerWheel::with_defaults();
 let counter = Arc::new(AtomicU32::new(0));
 let counter_clone = Arc::clone(&counter);
 
 // 两步式 API：创建任务 + 注册
-let task = TimerWheel::create_task(
-    Duration::from_millis(100),
-    move || {
-        let counter = Arc::clone(&counter_clone);
-        async move {
-            counter.fetch_add(1, Ordering::SeqCst);
-            println!("定时器触发！");
-        }
-    },
-);
+let callback = Some(CallbackWrapper::new(move || {
+    let counter = Arc::clone(&counter_clone);
+    async move {
+        counter.fetch_add(1, Ordering::SeqCst);
+        println!("定时器触发！");
+    }
+}));
+let task = TimerWheel::create_task(Duration::from_millis(100), callback);
 let handle = timer.register(task);
 
 // 等待定时器完成
@@ -313,14 +313,14 @@ handle.into_completion_receiver().0.await.ok();
 #### 取消定时器
 
 ```rust
+use kestrel_protocol_timer::CallbackWrapper;
+
 let timer = TimerWheel::with_defaults();
 
-let task = TimerWheel::create_task(
-    Duration::from_secs(10),
-    || async {
-        println!("这条消息不会被打印");
-    },
-);
+let callback = Some(CallbackWrapper::new(|| async {
+    println!("这条消息不会被打印");
+}));
+let task = TimerWheel::create_task(Duration::from_secs(10), callback);
 let handle = timer.register(task);
 
 // 取消定时器
@@ -331,26 +331,26 @@ println!("取消成功: {}", cancelled);
 #### 推迟定时器
 
 ```rust
+use kestrel_protocol_timer::CallbackWrapper;
+
 let timer = TimerWheel::with_defaults();
 let counter = Arc::new(AtomicU32::new(0));
 let counter_clone = Arc::clone(&counter);
 
 // 创建一个 50ms 后触发的定时器
-let task = TimerWheel::create_task(
-    Duration::from_millis(50),
-    move || {
-        let counter = Arc::clone(&counter_clone);
-        async move {
-            counter.fetch_add(1, Ordering::SeqCst);
-            println!("定时器触发！");
-        }
-    },
-);
+let callback = Some(CallbackWrapper::new(move || {
+    let counter = Arc::clone(&counter_clone);
+    async move {
+        counter.fetch_add(1, Ordering::SeqCst);
+        println!("定时器触发！");
+    }
+}));
+let task = TimerWheel::create_task(Duration::from_millis(50), callback);
 let task_id = task.get_id();
 let handle = timer.register(task);
 
-// 推迟到 150ms 后触发
-let postponed = timer.postpone(task_id, Duration::from_millis(150));
+// 推迟到 150ms 后触发（保持原回调）
+let postponed = timer.postpone(task_id, Duration::from_millis(150), None);
 println!("推迟成功: {}", postponed);
 
 // 等待定时器完成
@@ -360,25 +360,22 @@ handle.into_completion_receiver().0.await.ok();
 #### 推迟并替换回调
 
 ```rust
+use kestrel_protocol_timer::CallbackWrapper;
+
 let timer = TimerWheel::with_defaults();
 
-let task = TimerWheel::create_task(
-    Duration::from_millis(50),
-    || async {
-        println!("原始回调");
-    },
-);
+let callback = Some(CallbackWrapper::new(|| async {
+    println!("原始回调");
+}));
+let task = TimerWheel::create_task(Duration::from_millis(50), callback);
 let task_id = task.get_id();
 let handle = timer.register(task);
 
 // 推迟并替换回调函数
-let postponed = timer.postpone_with_callback(
-    task_id,
-    Duration::from_millis(100),
-    || async {
-        println!("新的回调！");
-    }
-);
+let new_callback = Some(CallbackWrapper::new(|| async {
+    println!("新的回调！");
+}));
+let postponed = timer.postpone(task_id, Duration::from_millis(100), new_callback);
 println!("推迟成功: {}", postponed);
 
 // 等待定时器完成（会执行新回调）
@@ -390,6 +387,8 @@ handle.into_completion_receiver().0.await.ok();
 #### 批量调度定时器
 
 ```rust
+use kestrel_protocol_timer::CallbackWrapper;
+
 let timer = TimerWheel::with_defaults();
 let counter = Arc::new(AtomicU32::new(0));
 
@@ -398,12 +397,12 @@ let callbacks: Vec<_> = (0..100)
     .map(|i| {
         let counter = Arc::clone(&counter);
         let delay = Duration::from_millis(100 + i * 10);
-        let callback = move || {
+        let callback = Some(CallbackWrapper::new(move || {
             let counter = Arc::clone(&counter);
             async move {
                 counter.fetch_add(1, Ordering::SeqCst);
             }
-        };
+        }));
         (delay, callback)
     })
     .collect();
@@ -418,11 +417,13 @@ println!("已调度 {} 个定时器", batch_handle.len());
 #### 批量取消定时器
 
 ```rust
+use kestrel_protocol_timer::CallbackWrapper;
+
 let timer = TimerWheel::with_defaults();
 
 // 创建批量定时器
 let callbacks: Vec<_> = (0..50)
-    .map(|_| (Duration::from_secs(10), || async {}))
+    .map(|_| (Duration::from_secs(10), Some(CallbackWrapper::new(|| async {}))))
     .collect();
 
 let tasks = TimerWheel::create_batch(callbacks);
@@ -436,6 +437,8 @@ println!("已取消 {} 个定时器", cancelled_count);
 #### 批量推迟定时器
 
 ```rust
+use kestrel_protocol_timer::CallbackWrapper;
+
 let timer = TimerWheel::with_defaults();
 let counter = Arc::new(AtomicU32::new(0));
 
@@ -443,15 +446,13 @@ let counter = Arc::new(AtomicU32::new(0));
 let mut task_ids = Vec::new();
 for _ in 0..100 {
     let counter_clone = Arc::clone(&counter);
-    let task = TimerWheel::create_task(
-        Duration::from_millis(50),
-        move || {
-            let counter = Arc::clone(&counter_clone);
-            async move {
-                counter.fetch_add(1, Ordering::SeqCst);
-            }
-        },
-    );
+    let callback = Some(CallbackWrapper::new(move || {
+        let counter = Arc::clone(&counter_clone);
+        async move {
+            counter.fetch_add(1, Ordering::SeqCst);
+        }
+    }));
+    let task = TimerWheel::create_task(Duration::from_millis(50), callback);
     task_ids.push((task.get_id(), Duration::from_millis(150)));
     timer.register(task);
 }
@@ -464,16 +465,15 @@ println!("已推迟 {} 个定时器", postponed);
 #### 批量推迟并替换回调
 
 ```rust
+use kestrel_protocol_timer::CallbackWrapper;
+
 let timer = TimerWheel::with_defaults();
 let counter = Arc::new(AtomicU32::new(0));
 
 // 创建批量定时器
 let mut task_ids = Vec::new();
 for _ in 0..50 {
-    let task = TimerWheel::create_task(
-        Duration::from_millis(50),
-        || async {},
-    );
+    let task = TimerWheel::create_task(Duration::from_millis(50), None);
     task_ids.push(task.get_id());
     timer.register(task);
 }
@@ -483,12 +483,13 @@ let updates: Vec<_> = task_ids
     .into_iter()
     .map(|id| {
         let counter = Arc::clone(&counter);
-        (id, Duration::from_millis(150), move || {
+        let callback = Some(CallbackWrapper::new(move || {
             let counter = Arc::clone(&counter);
             async move {
                 counter.fetch_add(1, Ordering::SeqCst);
             }
-        })
+        }));
+        (id, Duration::from_millis(150), callback)
     })
     .collect();
 
@@ -501,14 +502,14 @@ println!("已推迟 {} 个定时器并替换回调", postponed);
 #### 等待单个定时器完成
 
 ```rust
+use kestrel_protocol_timer::CallbackWrapper;
+
 let timer = TimerWheel::with_defaults();
 
-let task = TimerWheel::create_task(
-    Duration::from_millis(100),
-    || async {
-        println!("定时器触发");
-    },
-);
+let callback = Some(CallbackWrapper::new(|| async {
+    println!("定时器触发");
+}));
+let task = TimerWheel::create_task(Duration::from_millis(100), callback);
 let handle = timer.register(task);
 
 // 等待定时器完成
@@ -521,6 +522,8 @@ match handle.into_completion_receiver().0.await {
 #### 批量完成通知
 
 ```rust
+use kestrel_protocol_timer::CallbackWrapper;
+
 let timer = TimerWheel::with_defaults();
 let counter = Arc::new(AtomicU32::new(0));
 
@@ -529,12 +532,12 @@ let callbacks: Vec<_> = (0..10)
     .map(|i| {
         let counter = Arc::clone(&counter);
         let delay = Duration::from_millis(50 + i * 10);
-        let callback = move || {
+        let callback = Some(CallbackWrapper::new(move || {
             let counter = Arc::clone(&counter);
             async move {
                 counter.fetch_add(1, Ordering::SeqCst);
             }
-        };
+        }));
         (delay, callback)
     })
     .collect();
@@ -577,18 +580,16 @@ println!("定时器到期");
 #### 创建和使用 TimerService
 
 ```rust
-use kestrel_protocol_timer::{TimerWheel, TimerService};
+use kestrel_protocol_timer::{TimerWheel, TimerService, CallbackWrapper};
 
 let timer = TimerWheel::with_defaults();
 let mut service = timer.create_service();
 
 // 两步式 API：创建任务 + 注册
-let task = TimerService::create_task(
-    Duration::from_millis(100),
-    || async {
-        println!("通过 service 调度的定时器触发");
-    }
-);
+let callback = Some(CallbackWrapper::new(|| async {
+    println!("通过 service 调度的定时器触发");
+}));
+let task = TimerService::create_task(Duration::from_millis(100), callback);
 let task_id = task.get_id();
 service.register(task).unwrap();
 
@@ -598,12 +599,14 @@ println!("已调度任务 ID: {:?}", task_id);
 #### 批量调度并接收超时通知
 
 ```rust
+use kestrel_protocol_timer::CallbackWrapper;
+
 let timer = TimerWheel::with_defaults();
 let mut service = timer.create_service();
 
 // 批量调度定时器：创建 + 注册
 let callbacks: Vec<_> = (0..100)
-    .map(|_| (Duration::from_millis(100), || async {}))
+    .map(|_| (Duration::from_millis(100), Some(CallbackWrapper::new(|| async {}))))
     .collect();
 
 let tasks = TimerService::create_batch(callbacks);
@@ -632,21 +635,23 @@ service.shutdown().await;
 #### 动态取消任务
 
 ```rust
+use kestrel_protocol_timer::CallbackWrapper;
+
 let timer = TimerWheel::with_defaults();
 let service = timer.create_service();
 
 // 通过 service 直接调度定时器
-let task1 = TimerService::create_task(
-    Duration::from_secs(5),
-    || async { println!("任务 1 触发"); }
-);
+let callback1 = Some(CallbackWrapper::new(|| async { 
+    println!("任务 1 触发"); 
+}));
+let task1 = TimerService::create_task(Duration::from_secs(5), callback1);
 let task_id1 = task1.get_id();
 service.register(task1).unwrap();
 
-let task2 = TimerService::create_task(
-    Duration::from_secs(10),
-    || async { println!("任务 2 触发"); }
-);
+let callback2 = Some(CallbackWrapper::new(|| async { 
+    println!("任务 2 触发"); 
+}));
+let task2 = TimerService::create_task(Duration::from_secs(10), callback2);
 let task_id2 = task2.get_id();
 service.register(task2).unwrap();
 
@@ -663,26 +668,26 @@ println!("批量取消了 {} 个任务", cancelled_count);
 #### 动态推迟任务
 
 ```rust
+use kestrel_protocol_timer::CallbackWrapper;
+
 let timer = TimerWheel::with_defaults();
 let service = timer.create_service();
 let counter = Arc::new(AtomicU32::new(0));
 let counter_clone = Arc::clone(&counter);
 
 // 调度一个任务
-let task = TimerService::create_task(
-    Duration::from_millis(50),
-    move || {
-        let counter = Arc::clone(&counter_clone);
-        async move {
-            counter.fetch_add(1, Ordering::SeqCst);
-        }
+let callback = Some(CallbackWrapper::new(move || {
+    let counter = Arc::clone(&counter_clone);
+    async move {
+        counter.fetch_add(1, Ordering::SeqCst);
     }
-);
+}));
+let task = TimerService::create_task(Duration::from_millis(50), callback);
 let task_id = task.get_id();
 service.register(task).unwrap();
 
-// 推迟任务
-let postponed = service.postpone_task(task_id, Duration::from_millis(150));
+// 推迟任务（保持原回调）
+let postponed = service.postpone(task_id, Duration::from_millis(150), None);
 println!("推迟结果: {}", postponed);
 
 // 接收超时通知
@@ -693,7 +698,7 @@ if let Some(completed_task_id) = rx.recv().await {
 
 // 批量推迟任务
 let callbacks: Vec<_> = (0..10)
-    .map(|_| (Duration::from_millis(50), || async {}))
+    .map(|_| (Duration::from_millis(50), Some(CallbackWrapper::new(|| async {}))))
     .collect();
 let tasks = TimerService::create_batch(callbacks);
 let task_ids: Vec<_> = tasks.iter().map(|t| t.get_id()).collect();
@@ -703,7 +708,7 @@ let updates: Vec<_> = task_ids
     .iter()
     .map(|&id| (id, Duration::from_millis(150)))
     .collect();
-let postponed_count = service.postpone_batch(&updates).await;
+let postponed_count = service.postpone_batch(updates);
 println!("批量推迟了 {} 个任务", postponed_count);
 ```
 
@@ -740,21 +745,24 @@ let timer = TimerWheel::new(config);
 
 #### 调度方法
 
-**`fn create_task<C>(delay: Duration, callback: C) -> TimerTask`**（静态方法）
+**`fn create_task(delay: Duration, callback: Option<CallbackWrapper>) -> TimerTask`**（静态方法）
 
 创建一个定时器任务（申请阶段）。
 
 参数：
 - `delay`：延迟时间
-- `callback`：实现了 TimerCallback trait 的回调对象
+- `callback`：可选的回调包装器（`Option<CallbackWrapper>`）
 
 返回：
 - `TimerTask`：待注册的定时器任务
 
 ```rust
-let task = TimerWheel::create_task(Duration::from_secs(1), || async {
+use kestrel_protocol_timer::CallbackWrapper;
+
+let callback = Some(CallbackWrapper::new(|| async {
     println!("1 秒后执行");
-});
+}));
+let task = TimerWheel::create_task(Duration::from_secs(1), callback);
 ```
 
 **`fn register(&self, task: TimerTask) -> TimerHandle`**
@@ -768,16 +776,19 @@ let task = TimerWheel::create_task(Duration::from_secs(1), || async {
 - `TimerHandle`：定时器句柄
 
 ```rust
-let task = TimerWheel::create_task(Duration::from_secs(1), || async {});
+use kestrel_protocol_timer::CallbackWrapper;
+
+let callback = Some(CallbackWrapper::new(|| async {}));
+let task = TimerWheel::create_task(Duration::from_secs(1), callback);
 let handle = timer.register(task);
 ```
 
-**`fn create_batch<C>(callbacks: Vec<(Duration, C)>) -> Vec<TimerTask>`**（静态方法）
+**`fn create_batch(callbacks: Vec<(Duration, Option<CallbackWrapper>)>) -> Vec<TimerTask>`**（静态方法）
 
 批量创建定时器任务（申请阶段）。
 
 参数：
-- `callbacks`：(延迟时间, 回调函数) 的向量
+- `callbacks`：(延迟时间, 可选回调) 的向量
 
 返回：
 - `Vec<TimerTask>`：待注册的任务列表
@@ -793,9 +804,11 @@ let handle = timer.register(task);
 - `BatchHandle`：批量句柄
 
 ```rust
+use kestrel_protocol_timer::CallbackWrapper;
+
 let callbacks = vec![
-    (Duration::from_secs(1), || async { println!("1"); }),
-    (Duration::from_secs(2), || async { println!("2"); }),
+    (Duration::from_secs(1), Some(CallbackWrapper::new(|| async { println!("1"); }))),
+    (Duration::from_secs(2), Some(CallbackWrapper::new(|| async { println!("2"); }))),
 ];
 let tasks = TimerWheel::create_batch(callbacks);
 let batch = timer.register_batch(tasks);
@@ -803,41 +816,30 @@ let batch = timer.register_batch(tasks);
 
 #### 推迟方法
 
-**`fn postpone(&self, task_id: TaskId, new_delay: Duration) -> bool`**
+**`fn postpone(&self, task_id: TaskId, new_delay: Duration, callback: Option<CallbackWrapper>) -> bool`**
 
-推迟定时器任务（保持原回调）。
+推迟定时器任务。
 
 参数：
 - `task_id`：要推迟的任务 ID
 - `new_delay`：新的延迟时间（从当前时间点重新计算）
+- `callback`：可选的新回调函数。如果为 `None`，则保持原回调；如果为 `Some`，则替换回调
 
 返回：
 - `true`：成功推迟
 - `false`：任务不存在
 
 ```rust
-let postponed = timer.postpone(task_id, Duration::from_secs(10));
-```
+use kestrel_protocol_timer::CallbackWrapper;
 
-**`fn postpone_with_callback<C>(&self, task_id: TaskId, new_delay: Duration, callback: C) -> bool`**
+// 推迟并保持原回调
+let postponed = timer.postpone(task_id, Duration::from_secs(10), None);
 
-推迟定时器任务并替换回调函数。
-
-参数：
-- `task_id`：要推迟的任务 ID
-- `new_delay`：新的延迟时间
-- `callback`：新的回调函数
-
-返回：
-- `true`：成功推迟
-- `false`：任务不存在
-
-```rust
-let postponed = timer.postpone_with_callback(
-    task_id,
-    Duration::from_secs(10),
-    || async { println!("新回调"); }
-);
+// 推迟并替换回调
+let new_callback = Some(CallbackWrapper::new(|| async { 
+    println!("新回调"); 
+}));
+let postponed = timer.postpone(task_id, Duration::from_secs(10), new_callback);
 ```
 
 **`fn postpone_batch(&self, updates: &[(TaskId, Duration)]) -> usize`**
@@ -857,19 +859,21 @@ let updates = vec![
 let postponed = timer.postpone_batch(&updates);
 ```
 
-**`fn postpone_batch_with_callbacks<C>(&self, updates: Vec<(TaskId, Duration, C)>) -> usize`**
+**`fn postpone_batch_with_callbacks(&self, updates: Vec<(TaskId, Duration, Option<CallbackWrapper>)>) -> usize`**
 
-批量推迟定时器任务并替换回调。
+批量推迟定时器任务并可选择替换回调。
 
 参数：
-- `updates`：(任务ID, 新延迟, 新回调) 的向量
+- `updates`：(任务ID, 新延迟, 可选回调) 的向量
 
 返回：成功推迟的任务数量
 
 ```rust
+use kestrel_protocol_timer::CallbackWrapper;
+
 let updates = vec![
-    (task_id1, Duration::from_secs(10), || async { println!("1"); }),
-    (task_id2, Duration::from_secs(15), || async { println!("2"); }),
+    (task_id1, Duration::from_secs(10), Some(CallbackWrapper::new(|| async { println!("1"); }))),
+    (task_id2, Duration::from_secs(15), None), // 保持原回调
 ];
 let postponed = timer.postpone_batch_with_callbacks(updates);
 ```
@@ -948,28 +952,35 @@ for rx in receivers {
 
 ### TimerService
 
-**`fn create_task<C>(delay: Duration, callback: C) -> TimerTask`**（静态方法）
+**`fn create_task(delay: Duration, callback: Option<CallbackWrapper>) -> TimerTask`**（静态方法）
 
 创建定时器任务（申请阶段）。
 
 参数：
 - `delay`：延迟时间
-- `callback`：实现了 TimerCallback trait 的回调对象
+- `callback`：可选的回调包装器
 
 返回：`TimerTask`
 
 ```rust
-let task = TimerService::create_task(Duration::from_secs(1), || async {});
+use kestrel_protocol_timer::CallbackWrapper;
+
+let callback = Some(CallbackWrapper::new(|| async {}));
+let task = TimerService::create_task(Duration::from_secs(1), callback);
 ```
 
-**`fn create_batch<C>(callbacks: Vec<(Duration, C)>) -> Vec<TimerTask>`**（静态方法）
+**`fn create_batch(callbacks: Vec<(Duration, Option<CallbackWrapper>)>) -> Vec<TimerTask>`**（静态方法）
 
 批量创建定时器任务（申请阶段）。
 
 返回：`Vec<TimerTask>`
 
 ```rust
-let callbacks = vec![(Duration::from_secs(1), || async {})];
+use kestrel_protocol_timer::CallbackWrapper;
+
+let callbacks = vec![
+    (Duration::from_secs(1), Some(CallbackWrapper::new(|| async {})))
+];
 let tasks = TimerService::create_batch(callbacks);
 ```
 
@@ -1022,40 +1033,33 @@ let cancelled = service.cancel_task(task_id);
 let cancelled_count = service.cancel_batch(&task_ids);
 ```
 
-**`fn postpone_task(&self, task_id: TaskId, new_delay: Duration) -> bool`**
+**`fn postpone(&self, task_id: TaskId, new_delay: Duration, callback: Option<CallbackWrapper>) -> bool`**
 
-推迟任务（保持原回调）。
-
-参数：
-- `task_id`：要推迟的任务 ID
-- `new_delay`：新的延迟时间
-
-返回：是否成功推迟
-
-```rust
-let postponed = service.postpone_task(task_id, Duration::from_secs(10));
-```
-
-**`fn postpone_task_with_callback<C>(&self, task_id: TaskId, new_delay: Duration, callback: C) -> bool`**
-
-推迟任务并替换回调。
+推迟任务。
 
 参数：
 - `task_id`：要推迟的任务 ID
 - `new_delay`：新的延迟时间
-- `callback`：新的回调函数
+- `callback`：可选的新回调函数。如果为 `None`，则保持原回调；如果为 `Some`，则替换回调
 
 返回：是否成功推迟
 
 ```rust
-let postponed = service.postpone_task_with_callback(
-    task_id,
-    Duration::from_secs(10),
-    || async { println!("新回调"); }
-);
+use kestrel_protocol_timer::CallbackWrapper;
+
+// 推迟并保持原回调
+let postponed = service.postpone(task_id, Duration::from_secs(10), None);
+
+// 推迟并替换回调
+let new_callback = Some(CallbackWrapper::new(|| async { 
+    println!("新回调"); 
+}));
+let postponed = service.postpone(task_id, Duration::from_secs(10), new_callback);
 ```
 
-**`fn postpone_batch(&self, updates: &[(TaskId, Duration)]) -> usize`**
+**`fn postpone(&self, task_id: TaskId, new_delay: Duration, callback: Option<CallbackWrapper>) -> bool`**
+
+**`fn postpone_batch(&self, updates: Vec<(TaskId, Duration)>) -> usize`**
 
 批量推迟任务（保持原回调）。
 
@@ -1063,18 +1067,21 @@ let postponed = service.postpone_task_with_callback(
 
 ```rust
 let updates = vec![(task_id1, Duration::from_secs(10))];
-let postponed = service.postpone_batch(&updates);
+let postponed = service.postpone_batch(updates);
 ```
 
-**`fn postpone_batch_with_callbacks<C>(&self, updates: Vec<(TaskId, Duration, C)>) -> usize`**
+**`fn postpone_batch_with_callbacks(&self, updates: Vec<(TaskId, Duration, Option<CallbackWrapper>)>) -> usize`**
 
-批量推迟任务并替换回调。
+批量推迟任务并可选择替换回调。
 
 返回：成功推迟的任务数量
 
 ```rust
+use kestrel_protocol_timer::CallbackWrapper;
+
 let updates = vec![
-    (task_id1, Duration::from_secs(10), || async { println!("1"); }),
+    (task_id1, Duration::from_secs(10), Some(CallbackWrapper::new(|| async { println!("1"); }))),
+    (task_id2, Duration::from_secs(15), None), // 保持原回调
 ];
 let postponed = service.postpone_batch_with_callbacks(updates);
 ```
@@ -1312,21 +1319,20 @@ cargo test test_basic_timer
 
 ```rust
 use std::time::Duration;
+use kestrel_protocol_timer::CallbackWrapper;
 
 // 为每个网络连接设置超时
 async fn handle_connection(timer: &TimerWheel, conn_id: u64) {
-    let task = TimerWheel::create_task(
-        Duration::from_secs(30),
-        move || async move {
-            println!("连接 {} 超时，关闭连接", conn_id);
-            // 关闭连接逻辑
-        }
-    );
+    let callback = Some(CallbackWrapper::new(move || async move {
+        println!("连接 {} 超时，关闭连接", conn_id);
+        // 关闭连接逻辑
+    }));
+    let task = TimerWheel::create_task(Duration::from_secs(30), callback);
     let task_id = task.get_id();
     let timeout_handle = timer.register(task);
     
-    // 如果收到部分数据，延长超时时间
-    // timer.postpone(task_id, Duration::from_secs(30));
+    // 如果收到部分数据，延长超时时间（保持原回调）
+    // timer.postpone(task_id, Duration::from_secs(30), None);
     
     // 如果连接完成，取消超时
     // timeout_handle.cancel();
@@ -1336,19 +1342,21 @@ async fn handle_connection(timer: &TimerWheel, conn_id: u64) {
 ### 2. 任务延迟执行
 
 ```rust
+use kestrel_protocol_timer::CallbackWrapper;
+
 // 延迟 5 秒执行清理任务
-let task = TimerWheel::create_task(
-    Duration::from_secs(5),
-    || async {
-        cleanup_temporary_files().await;
-    }
-);
+let callback = Some(CallbackWrapper::new(|| async {
+    cleanup_temporary_files().await;
+}));
+let task = TimerWheel::create_task(Duration::from_secs(5), callback);
 timer.register(task);
 ```
 
 ### 3. 心跳检测
 
 ```rust
+use kestrel_protocol_timer::CallbackWrapper;
+
 let config = WheelConfig::builder()
     .tick_duration(Duration::from_secs(1))
     .slot_count(512)
@@ -1358,13 +1366,11 @@ let mut service = timer.create_service();
 
 // 为每个客户端设置心跳检测
 for client_id in client_ids {
-    let task = TimerService::create_task(
-        Duration::from_secs(30),
-        move || async move {
-            println!("客户端 {} 心跳超时", client_id);
-            disconnect_client(client_id).await;
-        }
-    );
+    let callback = Some(CallbackWrapper::new(move || async move {
+        println!("客户端 {} 心跳超时", client_id);
+        disconnect_client(client_id).await;
+    }));
+    let task = TimerService::create_task(Duration::from_secs(30), callback);
     service.register(task).unwrap();
 }
 
@@ -1381,6 +1387,7 @@ while let Some(task_id) = rx.recv().await {
 use std::collections::HashMap;
 use std::sync::Arc;
 use parking_lot::Mutex;
+use kestrel_protocol_timer::CallbackWrapper;
 
 struct CacheManager {
     timer: TimerWheel,
@@ -1394,14 +1401,15 @@ impl CacheManager {
         
         // 设置过期定时器
         let cache = Arc::clone(&self.cache);
-        let task = TimerWheel::create_task(ttl, move || {
+        let callback = Some(CallbackWrapper::new(move || {
             let cache = Arc::clone(&cache);
             let key = key.clone();
             async move {
                 cache.lock().remove(&key);
                 println!("缓存键 {} 已过期", key);
             }
-        });
+        }));
+        let task = TimerWheel::create_task(ttl, callback);
         self.timer.register(task);
     }
 }
@@ -1410,6 +1418,8 @@ impl CacheManager {
 ### 5. 定时任务调度
 
 ```rust
+use kestrel_protocol_timer::CallbackWrapper;
+
 // 每个任务在特定时间后执行
 let tasks = vec![
     ("任务A", Duration::from_secs(10)),
@@ -1419,10 +1429,11 @@ let tasks = vec![
 
 let callbacks: Vec<_> = tasks.into_iter()
     .map(|(name, delay)| {
-        (delay, move || async move {
+        let callback = Some(CallbackWrapper::new(move || async move {
             println!("执行定时任务: {}", name);
             execute_scheduled_task(name).await;
-        })
+        }));
+        (delay, callback)
     })
     .collect();
 
@@ -1433,6 +1444,8 @@ timer.register_batch(task_list);
 ### 6. 游戏服务器 Buff 系统
 
 ```rust
+use kestrel_protocol_timer::CallbackWrapper;
+
 // 游戏角色的 buff 效果管理
 async fn apply_buff(
     timer: &TimerWheel,
@@ -1442,10 +1455,11 @@ async fn apply_buff(
 ) -> TaskId {
     println!("玩家 {} 获得 buff: {:?}", player_id, buff_type);
     
-    let task = TimerWheel::create_task(duration, move || async move {
+    let callback = Some(CallbackWrapper::new(move || async move {
         println!("玩家 {} 的 buff {:?} 已失效", player_id, buff_type);
         remove_buff(player_id, buff_type).await;
-    });
+    }));
+    let task = TimerWheel::create_task(duration, callback);
     let task_id = task.get_id();
     timer.register(task);
     task_id
@@ -1457,7 +1471,8 @@ async fn extend_buff(
     task_id: TaskId,
     extra_duration: Duration
 ) {
-    let extended = timer.postpone(task_id, extra_duration);
+    // 保持原回调
+    let extended = timer.postpone(task_id, extra_duration, None);
     if extended {
         println!("Buff 持续时间已延长");
     }
@@ -1467,6 +1482,8 @@ async fn extend_buff(
 ### 7. 动态重试机制
 
 ```rust
+use kestrel_protocol_timer::CallbackWrapper;
+
 // 实现带退避策略的重试机制
 async fn retry_with_backoff(
     timer: &TimerWheel,
@@ -1486,9 +1503,10 @@ async fn retry_with_backoff(
                 
                 println!("操作失败，{} 秒后重试（第 {} 次）", delay.as_secs(), retry_count);
                 
-                let task = TimerService::create_task(delay, move || async {
+                let callback = Some(CallbackWrapper::new(move || async move {
                     println!("开始第 {} 次重试", retry_count);
-                });
+                }));
+                let task = TimerService::create_task(delay, callback);
                 service.register(task).unwrap();
                 
                 // 等待定时器触发...

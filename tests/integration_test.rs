@@ -572,7 +572,7 @@ async fn test_postpone_with_service() {
     service.register(task).unwrap();
 
     // 推迟任务
-    let postponed = service.postpone_task(task_id, Duration::from_millis(150), None);
+    let postponed = service.postpone(task_id, Duration::from_millis(150), None);
     assert!(postponed, "任务应该成功推迟");
 
     // 等待原定时间，任务不应该触发
