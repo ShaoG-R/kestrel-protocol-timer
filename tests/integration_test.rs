@@ -572,7 +572,7 @@ async fn test_postpone_with_service() {
         },
     );
     let task_id = task.get_id();
-    service.register(task).await;
+    service.register(task).unwrap();
 
     // 推迟任务
     let postponed = service.postpone_task(task_id, Duration::from_millis(150));

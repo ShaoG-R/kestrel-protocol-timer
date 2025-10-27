@@ -590,7 +590,7 @@ let task = TimerService::create_task(
     }
 );
 let task_id = task.get_id();
-service.register(task).await;
+service.register(task).unwrap();
 
 println!("已调度任务 ID: {:?}", task_id);
 ```
@@ -607,7 +607,7 @@ let callbacks: Vec<_> = (0..100)
     .collect();
 
 let tasks = TimerService::create_batch(callbacks);
-service.register_batch(tasks).await;
+service.register_batch(tasks).unwrap();
 println!("已调度 100 个任务");
 
 // 获取超时通知接收器
@@ -641,22 +641,22 @@ let task1 = TimerService::create_task(
     || async { println!("任务 1 触发"); }
 );
 let task_id1 = task1.get_id();
-service.register(task1).await;
+service.register(task1).unwrap();
 
 let task2 = TimerService::create_task(
     Duration::from_secs(10),
     || async { println!("任务 2 触发"); }
 );
 let task_id2 = task2.get_id();
-service.register(task2).await;
+service.register(task2).unwrap();
 
 // 取消任务
-let cancelled = service.cancel_task(task_id2).await;
+let cancelled = service.cancel_task(task_id2);
 println!("任务 2 取消结果: {}", cancelled);
 
 // 批量取消
 let task_ids = vec![task_id1];
-let cancelled_count = service.cancel_batch(&task_ids).await;
+let cancelled_count = service.cancel_batch(&task_ids);
 println!("批量取消了 {} 个任务", cancelled_count);
 ```
 
@@ -679,10 +679,10 @@ let task = TimerService::create_task(
     }
 );
 let task_id = task.get_id();
-service.register(task).await;
+service.register(task).unwrap();
 
 // 推迟任务
-let postponed = service.postpone_task(task_id, Duration::from_millis(150)).await;
+let postponed = service.postpone_task(task_id, Duration::from_millis(150));
 println!("推迟结果: {}", postponed);
 
 // 接收超时通知
@@ -697,7 +697,7 @@ let callbacks: Vec<_> = (0..10)
     .collect();
 let tasks = TimerService::create_batch(callbacks);
 let task_ids: Vec<_> = tasks.iter().map(|t| t.get_id()).collect();
-service.register_batch(tasks).await;
+service.register_batch(tasks).unwrap();
 
 let updates: Vec<_> = task_ids
     .iter()
@@ -973,22 +973,22 @@ let callbacks = vec![(Duration::from_secs(1), || async {})];
 let tasks = TimerService::create_batch(callbacks);
 ```
 
-**`async fn register(&self, task: TimerTask)`**
+**`fn register(&self, task: TimerTask) -> Result<(), TimerError>`**
 
 注册定时器任务到服务（注册阶段）。
 
 ```rust
 let task = TimerService::create_task(Duration::from_secs(1), || async {});
-service.register(task).await;
+service.register(task).unwrap();
 ```
 
-**`async fn register_batch(&self, tasks: Vec<TimerTask>)`**
+**`fn register_batch(&self, tasks: Vec<TimerTask>) -> Result<(), TimerError>`**
 
 批量注册定时器任务到服务（注册阶段）。
 
 ```rust
 let tasks = TimerService::create_batch(callbacks);
-service.register_batch(tasks).await;
+service.register_batch(tasks).unwrap();
 ```
 
 **`take_receiver(&mut self) -> Option<mpsc::Receiver<TaskId>>`**
@@ -1365,7 +1365,7 @@ for client_id in client_ids {
             disconnect_client(client_id).await;
         }
     );
-    service.register(task).await;
+    service.register(task).unwrap();
 }
 
 // 统一处理超时
@@ -1489,7 +1489,7 @@ async fn retry_with_backoff(
                 let task = TimerService::create_task(delay, move || async {
                     println!("开始第 {} 次重试", retry_count);
                 });
-                service.register(task).await;
+                service.register(task).unwrap();
                 
                 // 等待定时器触发...
             }

@@ -381,7 +381,7 @@ impl TimerWheel {
     ///     let tasks = TimerService::create_batch(
     ///         (0..5).map(|_| (Duration::from_millis(100), || async {})).collect()
     ///     );
-    ///     service.register_batch(tasks).await;
+    ///     service.register_batch(tasks).unwrap();
     ///     
     ///     // 接收超时通知
     ///     let mut rx = service.take_receiver().unwrap();

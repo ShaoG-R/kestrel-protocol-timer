@@ -30,7 +30,7 @@ fn bench_schedule_single(c: &mut Criterion) {
                     )
                 );
                 let task_id = task.get_id();
-                service.register(task).await;
+                service.register(task).unwrap();
                 
                 total_duration += start.elapsed();
                 black_box(task_id);
@@ -70,7 +70,7 @@ fn bench_schedule_batch(c: &mut Criterion) {
                         kestrel_protocol_timer::TimerService::create_batch(callbacks)
                     );
                     let task_ids: Vec<_> = tasks.iter().map(|t| t.get_id()).collect();
-                    service.register_batch(tasks).await;
+                    service.register_batch(tasks).unwrap();
                     
                     total_duration += start.elapsed();
                     black_box(task_ids);
@@ -104,7 +104,7 @@ fn bench_cancel_single(c: &mut Criterion) {
                     || async {}
                 );
                 let task_id = task.get_id();
-                service.register(task).await;
+                service.register(task).unwrap();
                 
                 // 测量阶段：只测量 cancel_task 的性能
                 let start = std::time::Instant::now();
@@ -145,7 +145,7 @@ fn bench_cancel_batch(c: &mut Criterion) {
                         .collect();
                     let tasks = kestrel_protocol_timer::TimerService::create_batch(callbacks);
                     let task_ids: Vec<_> = tasks.iter().map(|t| t.get_id()).collect();
-                    service.register_batch(tasks).await;
+                    service.register_batch(tasks).unwrap();
                     
                     // 测量阶段：只测量 cancel_batch 的性能
                     let start = std::time::Instant::now();
@@ -194,7 +194,7 @@ fn bench_concurrent_schedule(c: &mut Criterion) {
                                 .map(|_| (Duration::from_secs(10), || async {}))
                                 .collect();
                             let tasks = kestrel_protocol_timer::TimerService::create_batch(callbacks);
-                            service_clone.register_batch(tasks).await;
+                            service_clone.register_batch(tasks).unwrap();
                         };
                         handles.push(fut);
                     }
@@ -234,7 +234,7 @@ fn bench_high_frequency_cancel(c: &mut Criterion) {
                     .collect();
                 let tasks = kestrel_protocol_timer::TimerService::create_batch(callbacks);
                 let task_ids: Vec<_> = tasks.iter().map(|t| t.get_id()).collect();
-                service.register_batch(tasks).await;
+                service.register_batch(tasks).unwrap();
                 
                 // 测量阶段：只测量 cancel_batch 的性能
                 let start = std::time::Instant::now();
@@ -280,7 +280,7 @@ fn bench_mixed_operations(c: &mut Criterion) {
                         .collect();
                     let tasks = kestrel_protocol_timer::TimerService::create_batch(callbacks);
                     let task_ids: Vec<_> = tasks.iter().map(|t| t.get_id()).collect();
-                    service.register_batch(tasks).await;
+                    service.register_batch(tasks).unwrap();
                     
                     // 使用批量取消前5个任务
                     let to_cancel: Vec<_> = task_ids.iter().take(5).copied().collect();
@@ -321,7 +321,7 @@ fn bench_schedule_notify(c: &mut Criterion) {
                     kestrel_protocol_timer::TimerTask::new(Duration::from_secs(10), None)
                 );
                 let task_id = task.get_id();
-                service.register(task).await;
+                service.register(task).unwrap();
                 
                 total_duration += start.elapsed();
                 black_box(task_id);
@@ -353,7 +353,7 @@ fn bench_schedule_notify(c: &mut Criterion) {
                         task_ids.push(task.get_id());
                         tasks.push(task);
                     }
-                    service.register_batch(tasks).await;
+                    service.register_batch(tasks).unwrap();
                     
                     total_duration += start.elapsed();
                     black_box(task_ids);
@@ -399,7 +399,7 @@ fn bench_schedule_with_callback(c: &mut Criterion) {
                     )
                 );
                 let task_id = task.get_id();
-                service.register(task).await;
+                service.register(task).unwrap();
                 
                 total_duration += start.elapsed();
                 black_box(task_id);
@@ -433,7 +433,7 @@ fn bench_postpone_single(c: &mut Criterion) {
                     || async {}
                 );
                 let task_id = task.get_id();
-                service.register(task).await;
+                service.register(task).unwrap();
                 
                 // 测量阶段：只测量 postpone_task 的性能
                 let start = std::time::Instant::now();
@@ -474,7 +474,7 @@ fn bench_postpone_batch(c: &mut Criterion) {
                         .collect();
                     let tasks = kestrel_protocol_timer::TimerService::create_batch(callbacks);
                     let task_ids: Vec<_> = tasks.iter().map(|t| t.get_id()).collect();
-                    service.register_batch(tasks).await;
+                    service.register_batch(tasks).unwrap();
                     
                     // 准备推迟参数
                     let postpone_updates: Vec<_> = task_ids
@@ -522,7 +522,7 @@ fn bench_postpone_with_callback(c: &mut Criterion) {
                     || async {}
                 );
                 let task_id = task.get_id();
-                service.register(task).await;
+                service.register(task).unwrap();
                 
                 // 测量阶段：只测量 postpone_task_with_callback 的性能
                 let start = std::time::Instant::now();
@@ -574,7 +574,7 @@ fn bench_postpone_batch_with_callbacks(c: &mut Criterion) {
                         .collect();
                     let tasks = kestrel_protocol_timer::TimerService::create_batch(callbacks);
                     let task_ids: Vec<_> = tasks.iter().map(|t| t.get_id()).collect();
-                    service.register_batch(tasks).await;
+                    service.register_batch(tasks).unwrap();
                     
                     // 准备推迟参数（包含新回调）
                     let postpone_updates: Vec<_> = task_ids
@@ -635,7 +635,7 @@ fn bench_mixed_operations_with_postpone(c: &mut Criterion) {
                         .collect();
                     let tasks = kestrel_protocol_timer::TimerService::create_batch(callbacks);
                     let task_ids: Vec<_> = tasks.iter().map(|t| t.get_id()).collect();
-                    service.register_batch(tasks).await;
+                    service.register_batch(tasks).unwrap();
                     
                     // 推迟前5个任务
                     let to_postpone: Vec<_> = task_ids.iter().take(5)

@@ -15,8 +15,8 @@ pub enum TimerError {
         reason: String,
     },
     
-    /// 内部通信通道已关闭
-    ChannelClosed,
+    /// 注册失败（内部通道已满或已关闭）
+    RegisterFailed,
 }
 
 impl fmt::Display for TimerError {
@@ -28,8 +28,8 @@ impl fmt::Display for TimerError {
             TimerError::InvalidConfiguration { field, reason } => {
                 write!(f, "配置验证失败 ({}): {}", field, reason)
             }
-            TimerError::ChannelClosed => {
-                write!(f, "内部通信通道已关闭")
+            TimerError::RegisterFailed => {
+                write!(f, "注册失败：内部通道已满或已关闭")
             }
         }
     }
