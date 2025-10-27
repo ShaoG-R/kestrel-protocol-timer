@@ -1,5 +1,5 @@
 use crate::config::{ServiceConfig, WheelConfig};
-use crate::task::{CallbackWrapper, TaskId, TimerCallback};
+use crate::task::{CallbackWrapper, TaskId, TaskCompletionReason, TimerCallback};
 use crate::wheel::Wheel;
 use parking_lot::Mutex;
 use std::sync::Arc;
@@ -8,7 +8,7 @@ use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 
 /// 完成通知接收器，用于接收定时器完成通知
-pub struct CompletionReceiver(pub oneshot::Receiver<()>);
+pub struct CompletionReceiver(pub oneshot::Receiver<TaskCompletionReason>);
 
 /// 定时器句柄，用于管理定时器的生命周期
 /// 
@@ -21,7 +21,7 @@ pub struct TimerHandle {
 }
 
 impl TimerHandle {
-    pub(crate) fn new(task_id: TaskId, wheel: Arc<Mutex<Wheel>>, completion_rx: oneshot::Receiver<()>) -> Self {
+    pub(crate) fn new(task_id: TaskId, wheel: Arc<Mutex<Wheel>>, completion_rx: oneshot::Receiver<TaskCompletionReason>) -> Self {
         Self { task_id, wheel, completion_rx: CompletionReceiver(completion_rx) }
     }
 
@@ -106,11 +106,11 @@ impl TimerHandle {
 pub struct BatchHandle {
     pub(crate) task_ids: Vec<TaskId>,
     pub(crate) wheel: Arc<Mutex<Wheel>>,
-    pub(crate) completion_rxs: Vec<oneshot::Receiver<()>>,
+    pub(crate) completion_rxs: Vec<oneshot::Receiver<TaskCompletionReason>>,
 }
 
 impl BatchHandle {
-    pub(crate) fn new(task_ids: Vec<TaskId>, wheel: Arc<Mutex<Wheel>>, completion_rxs: Vec<oneshot::Receiver<()>>) -> Self {
+    pub(crate) fn new(task_ids: Vec<TaskId>, wheel: Arc<Mutex<Wheel>>, completion_rxs: Vec<oneshot::Receiver<TaskCompletionReason>>) -> Self {
         Self { task_ids, wheel, completion_rxs }
     }
 
@@ -192,7 +192,7 @@ impl BatchHandle {
     ///
     /// # 返回
     /// 所有任务的完成通知接收器列表引用
-    pub fn completion_receivers(&mut self) -> &mut Vec<oneshot::Receiver<()>> {
+    pub fn completion_receivers(&mut self) -> &mut Vec<oneshot::Receiver<TaskCompletionReason>> {
         &mut self.completion_rxs
     }
 
@@ -224,7 +224,7 @@ impl BatchHandle {
     /// }
     /// # }
     /// ```
-    pub fn into_completion_receivers(self) -> Vec<oneshot::Receiver<()>> {
+    pub fn into_completion_receivers(self) -> Vec<oneshot::Receiver<TaskCompletionReason>> {
         self.completion_rxs
     }
 }
@@ -265,7 +265,7 @@ impl IntoIterator for BatchHandle {
 /// BatchHandle 的迭代器
 pub struct BatchHandleIter {
     task_ids: std::vec::IntoIter<TaskId>,
-    completion_rxs: std::vec::IntoIter<oneshot::Receiver<()>>,
+    completion_rxs: std::vec::IntoIter<oneshot::Receiver<TaskCompletionReason>>,
     wheel: Arc<Mutex<Wheel>>,
 }
 
@@ -938,11 +938,11 @@ impl TimerWheel {
                             future.await;
                             
                             // 回调执行完成后发送通知
-                            let _ = notifier.0.send(());
+                            let _ = notifier.0.send(TaskCompletionReason::Expired);
                         });
                     } else {
                         // 如果没有回调，立即发送完成通知
-                        let _ = notifier.0.send(());
+                        let _ = notifier.0.send(TaskCompletionReason::Expired);
                     }
                 }
             }

@@ -69,7 +69,7 @@ pub use config::{
     WheelConfig, WheelConfigBuilder,
 };
 pub use error::TimerError;
-pub use task::{CallbackWrapper, CompletionNotifier, TaskId, TimerCallback, TimerTask};
+pub use task::{CallbackWrapper, CompletionNotifier, TaskCompletionReason, TaskId, TimerCallback, TimerTask};
 pub use timer::{BatchHandle, BatchHandleIter, CompletionReceiver, TimerHandle, TimerWheel};
 pub use service::TimerService;
 
@@ -228,5 +228,63 @@ mod tests {
 
         // 验证所有回调都已执行
         assert_eq!(counter.load(Ordering::SeqCst), 5);
+    }
+
+    #[tokio::test]
+    async fn test_completion_reason_expired() {
+        let timer = TimerWheel::with_defaults();
+        
+        let task = TimerTask::new(Duration::from_millis(50), None);
+        let handle = timer.register(task);
+
+        // 等待完成通知并验证原因是 Expired
+        let result = handle.into_completion_receiver().0.await.expect("Should receive completion notification");
+        assert_eq!(result, TaskCompletionReason::Expired);
+    }
+
+    #[tokio::test]
+    async fn test_completion_reason_cancelled() {
+        let timer = TimerWheel::with_defaults();
+        
+        let task = TimerTask::new(Duration::from_secs(10), None);
+        let handle = timer.register(task);
+
+        // 取消任务
+        let cancelled = handle.cancel();
+        assert!(cancelled);
+
+        // 等待完成通知并验证原因是 Cancelled
+        let result = handle.into_completion_receiver().0.await.expect("Should receive completion notification");
+        assert_eq!(result, TaskCompletionReason::Cancelled);
+    }
+
+    #[tokio::test]
+    async fn test_batch_completion_reasons() {
+        let timer = TimerWheel::with_defaults();
+        
+        // 创建 5 个任务，延迟 10 秒
+        let tasks: Vec<_> = (0..5)
+            .map(|_| TimerTask::new(Duration::from_secs(10), None))
+            .collect();
+        
+        let batch = timer.register_batch(tasks);
+        let task_ids: Vec<_> = batch.task_ids.clone();
+        let mut receivers = batch.into_completion_receivers();
+
+        // 取消前 3 个任务
+        timer.cancel_batch(&task_ids[0..3]);
+
+        // 验证前 3 个任务收到 Cancelled 通知
+        for rx in receivers.drain(0..3) {
+            let result = rx.await.expect("Should receive completion notification");
+            assert_eq!(result, TaskCompletionReason::Cancelled);
+        }
+
+        // 取消剩余任务并验证
+        timer.cancel_batch(&task_ids[3..5]);
+        for rx in receivers {
+            let result = rx.await.expect("Should receive completion notification");
+            assert_eq!(result, TaskCompletionReason::Cancelled);
+        }
     }
 }

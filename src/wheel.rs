@@ -1,5 +1,5 @@
 use crate::config::{BatchConfig, WheelConfig};
-use crate::task::{TaskId, TaskLocation, TimerTask};
+use crate::task::{TaskCompletionReason, TaskId, TaskLocation, TimerTask};
 use rustc_hash::FxHashMap;
 use std::time::Duration;
 use smallvec::SmallVec;
@@ -201,6 +201,11 @@ impl Wheel {
             
             // 使用 vec_index 直接访问，O(1) 复杂度
             if location.vec_index < slot.len() && slot[location.vec_index].id == task_id {
+                // 先取出 notifier 并发送取消通知
+                if let Some(notifier) = slot[location.vec_index].completion_notifier.take() {
+                    let _ = notifier.0.send(TaskCompletionReason::Cancelled);
+                }
+                
                 // 使用 swap_remove 移除任务
                 slot.swap_remove(location.vec_index);
                 
@@ -272,6 +277,11 @@ impl Wheel {
             for &(task_id, vec_index) in tasks.iter() {
                 // 验证任务仍在预期位置
                 if vec_index < slot.len() && slot[vec_index].id == task_id {
+                    // 先取出 notifier 并发送取消通知
+                    if let Some(notifier) = slot[vec_index].completion_notifier.take() {
+                        let _ = notifier.0.send(TaskCompletionReason::Cancelled);
+                    }
+                    
                     // 使用 swap_remove 移除任务
                     slot.swap_remove(vec_index);
                     

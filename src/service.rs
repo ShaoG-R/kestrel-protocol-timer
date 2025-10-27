@@ -1,5 +1,5 @@
 use crate::config::ServiceConfig;
-use crate::task::{TaskId, TimerCallback};
+use crate::task::{TaskCompletionReason, TaskId, TimerCallback};
 use crate::timer::{BatchHandle, TimerHandle};
 use crate::wheel::Wheel;
 use futures::stream::{FuturesUnordered, StreamExt};
@@ -653,14 +653,16 @@ impl ServiceActor {
     async fn run(mut self) {
         // 使用 FuturesUnordered 来监听所有的 completion_rxs
         // 每个 future 返回 (TaskId, Result)
-        let mut futures: FuturesUnordered<BoxFuture<'static, (TaskId, Result<(), tokio::sync::oneshot::error::RecvError>)>> = FuturesUnordered::new();
+        let mut futures: FuturesUnordered<BoxFuture<'static, (TaskId, Result<TaskCompletionReason, tokio::sync::oneshot::error::RecvError>)>> = FuturesUnordered::new();
 
         loop {
             tokio::select! {
                 // 监听超时事件
-                Some((task_id, _result)) = futures.next() => {
-                    // 任务超时，转发 TaskId
-                    let _ = self.timeout_tx.send(task_id).await;
+                Some((task_id, result)) = futures.next() => {
+                    // 检查完成原因，只转发超时（Expired）事件，不转发取消（Cancelled）事件
+                    if let Ok(TaskCompletionReason::Expired) = result {
+                        let _ = self.timeout_tx.send(task_id).await;
+                    }
                     // 任务会自动从 FuturesUnordered 中移除
                 }
                 
@@ -676,7 +678,7 @@ impl ServiceActor {
                             
                             // 将所有任务添加到 futures 中
                             for (task_id, rx) in task_ids.into_iter().zip(completion_rxs.into_iter()) {
-                                let future: BoxFuture<'static, (TaskId, Result<(), tokio::sync::oneshot::error::RecvError>)> = Box::pin(async move {
+                                let future: BoxFuture<'static, (TaskId, Result<TaskCompletionReason, tokio::sync::oneshot::error::RecvError>)> = Box::pin(async move {
                                     (task_id, rx.await)
                                 });
                                 futures.push(future);
@@ -690,7 +692,7 @@ impl ServiceActor {
                             } = handle;
                             
                             // 添加到 futures 中
-                            let future: BoxFuture<'static, (TaskId, Result<(), tokio::sync::oneshot::error::RecvError>)> = Box::pin(async move {
+                            let future: BoxFuture<'static, (TaskId, Result<TaskCompletionReason, tokio::sync::oneshot::error::RecvError>)> = Box::pin(async move {
                                 (task_id, completion_rx.0.await)
                             });
                             futures.push(future);
@@ -1337,6 +1339,39 @@ mod tests {
         // 等待回调执行
         tokio::time::sleep(Duration::from_millis(20)).await;
         assert_eq!(counter.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn test_cancelled_task_not_forwarded_to_timeout_rx() {
+        let timer = TimerWheel::with_defaults();
+        let mut service = timer.create_service();
+
+        // 注册两个任务：一个会被取消，一个会正常到期
+        let task1 = TimerService::create_task(Duration::from_secs(10), || async {});
+        let task1_id = task1.get_id();
+        service.register(task1).await;
+
+        let task2 = TimerService::create_task(Duration::from_millis(50), || async {});
+        let task2_id = task2.get_id();
+        service.register(task2).await;
+
+        // 取消第一个任务
+        let cancelled = service.cancel_task(task1_id).await;
+        assert!(cancelled, "Task should be cancelled");
+
+        // 等待第二个任务到期
+        let mut rx = service.take_receiver().unwrap();
+        let received_task_id = tokio::time::timeout(Duration::from_millis(200), rx.recv())
+            .await
+            .expect("Should receive timeout notification")
+            .expect("Should receive Some value");
+
+        // 应该只收到第二个任务（到期的）的通知，不应该收到第一个任务（取消的）的通知
+        assert_eq!(received_task_id, task2_id, "Should only receive expired task notification");
+
+        // 验证没有其他通知（特别是被取消的任务不应该有通知）
+        let no_more = tokio::time::timeout(Duration::from_millis(50), rx.recv()).await;
+        assert!(no_more.is_err(), "Should not receive any more notifications");
     }
 }
 

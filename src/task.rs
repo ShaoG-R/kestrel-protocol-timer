@@ -7,6 +7,17 @@ use tokio::sync::oneshot;
 /// 全局唯一的任务 ID 生成器
 static NEXT_TASK_ID: AtomicU64 = AtomicU64::new(1);
 
+/// 任务完成原因
+///
+/// 表示定时器任务完成的原因，可以是正常到期或被取消。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TaskCompletionReason {
+    /// 任务正常到期
+    Expired,
+    /// 任务被取消
+    Cancelled,
+}
+
 /// 定时器任务的唯一标识符
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct TaskId(u64);
@@ -71,7 +82,7 @@ where
 pub type CallbackWrapper = Arc<dyn TimerCallback>;
 
 /// 完成通知器，用于在任务完成时发送通知
-pub struct CompletionNotifier(pub oneshot::Sender<()>);
+pub struct CompletionNotifier(pub oneshot::Sender<TaskCompletionReason>);
 
 /// 定时器任务
 /// 
