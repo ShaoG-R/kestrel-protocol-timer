@@ -149,9 +149,8 @@ impl TimerService {
     /// - `task_id`: 要取消的任务 ID
     ///
     /// # 返回
-    /// - `Ok(true)`: 任务存在且成功取消
-    /// - `Ok(false)`: 任务不存在或取消失败
-    /// - `Err(String)`: 发送命令失败
+    /// - `true`: 任务存在且成功取消
+    /// - `false`: 任务不存在或取消失败
     ///
     /// # 性能说明
     /// 此方法使用直接取消优化，不需要等待 Actor 处理，大幅降低延迟
@@ -171,12 +170,12 @@ impl TimerService {
     /// service.register(task).await;
     /// 
     /// // 取消任务
-    /// let cancelled = service.cancel_task(task_id).await;
+    /// let cancelled = service.cancel_task(task_id);
     /// println!("Task cancelled: {}", cancelled);
     /// # }
     /// ```
     #[inline]
-    pub async fn cancel_task(&self, task_id: TaskId) -> bool {
+    pub fn cancel_task(&self, task_id: TaskId) -> bool {
         // 优化：直接取消任务，无需通知 Actor
         // FuturesUnordered 会在任务被取消时自动清理
         let mut wheel = self.wheel.lock();
@@ -210,12 +209,12 @@ impl TimerService {
     /// service.register_batch(tasks).await;
     /// 
     /// // 批量取消
-    /// let cancelled = service.cancel_batch(&task_ids).await;
+    /// let cancelled = service.cancel_batch(&task_ids);
     /// println!("成功取消 {} 个任务", cancelled);
     /// # }
     /// ```
     #[inline]
-    pub async fn cancel_batch(&self, task_ids: &[TaskId]) -> usize {
+    pub fn cancel_batch(&self, task_ids: &[TaskId]) -> usize {
         if task_ids.is_empty() {
             return 0;
         }
@@ -258,12 +257,12 @@ impl TimerService {
     /// service.register(task).await;
     /// 
     /// // 推迟到 10 秒后触发
-    /// let success = service.postpone_task(task_id, Duration::from_secs(10)).await;
+    /// let success = service.postpone_task(task_id, Duration::from_secs(10));
     /// println!("推迟成功: {}", success);
     /// # }
     /// ```
     #[inline]
-    pub async fn postpone_task(&self, task_id: TaskId, new_delay: Duration) -> bool {
+    pub fn postpone_task(&self, task_id: TaskId, new_delay: Duration) -> bool {
         // 优化：直接推迟任务，无需通知 Actor
         // FuturesUnordered 会继续监听原有的 completion_receiver
         let mut wheel = self.wheel.lock();
@@ -306,12 +305,12 @@ impl TimerService {
     ///     task_id,
     ///     Duration::from_secs(10),
     ///     || async { println!("New callback!"); }
-    /// ).await;
+    /// );
     /// println!("推迟成功: {}", success);
     /// # }
     /// ```
     #[inline]
-    pub async fn postpone_task_with_callback<C>(
+    pub fn postpone_task_with_callback<C>(
         &self,
         task_id: TaskId,
         new_delay: Duration,
@@ -355,12 +354,12 @@ impl TimerService {
     ///     .into_iter()
     ///     .map(|id| (id, Duration::from_secs(10)))
     ///     .collect();
-    /// let postponed = service.postpone_batch(&updates).await;
+    /// let postponed = service.postpone_batch(&updates);
     /// println!("成功推迟 {} 个任务", postponed);
     /// # }
     /// ```
     #[inline]
-    pub async fn postpone_batch(&self, updates: &[(TaskId, Duration)]) -> usize {
+    pub fn postpone_batch(&self, updates: &[(TaskId, Duration)]) -> usize {
         if updates.is_empty() {
             return 0;
         }
@@ -407,12 +406,12 @@ impl TimerService {
     ///         })
     ///     })
     ///     .collect();
-    /// let postponed = service.postpone_batch_with_callbacks(updates).await;
+    /// let postponed = service.postpone_batch_with_callbacks(updates);
     /// println!("成功推迟 {} 个任务", postponed);
     /// # }
     /// ```
     #[inline]
-    pub async fn postpone_batch_with_callbacks<C>(
+    pub fn postpone_batch_with_callbacks<C>(
         &self,
         updates: Vec<(TaskId, Duration, C)>,
     ) -> usize
@@ -781,11 +780,11 @@ mod tests {
         service.add_timer_handle(handle).await;
 
         // 取消任务
-        let cancelled = service.cancel_task(task_id).await;
+        let cancelled = service.cancel_task(task_id);
         assert!(cancelled, "Task should be cancelled successfully");
 
         // 尝试再次取消同一个任务，应该返回 false
-        let cancelled_again = service.cancel_task(task_id).await;
+        let cancelled_again = service.cancel_task(task_id);
         assert!(!cancelled_again, "Task should not exist anymore");
     }
 
@@ -803,7 +802,7 @@ mod tests {
         let fake_task = TimerWheel::create_task(Duration::from_millis(50), || async {});
         let fake_task_id = fake_task.get_id();
         // 不注册 fake_task
-        let cancelled = service.cancel_task(fake_task_id).await;
+        let cancelled = service.cancel_task(fake_task_id);
         assert!(!cancelled, "Nonexistent task should not be cancelled");
     }
 
@@ -833,7 +832,7 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(10)).await;
 
         // 尝试取消已经超时的任务，应该返回 false
-        let cancelled = service.cancel_task(task_id).await;
+        let cancelled = service.cancel_task(task_id);
         assert!(!cancelled, "Timed out task should not exist anymore");
     }
 
@@ -860,7 +859,7 @@ mod tests {
         service.add_timer_handle(handle).await;
 
         // 使用 cancel_task（会等待结果，但在后台协程中处理）
-        let cancelled = service.cancel_task(task_id).await;
+        let cancelled = service.cancel_task(task_id);
         assert!(cancelled, "Task should be cancelled successfully");
 
         // 等待足够长时间确保回调不会被执行
@@ -868,7 +867,7 @@ mod tests {
         assert_eq!(counter.load(Ordering::SeqCst), 0, "Callback should not have been executed");
 
         // 验证任务已从 active_tasks 中移除
-        let cancelled_again = service.cancel_task(task_id).await;
+        let cancelled_again = service.cancel_task(task_id);
         assert!(!cancelled_again, "Task should have been removed from active_tasks");
     }
 
@@ -991,7 +990,7 @@ mod tests {
         service.register(task).await;
 
         // 立即取消
-        let cancelled = service.cancel_task(task_id).await;
+        let cancelled = service.cancel_task(task_id);
         assert!(cancelled, "Task should be cancelled successfully");
 
         // 等待确保回调不会执行
@@ -1024,7 +1023,7 @@ mod tests {
         service.register_batch(tasks).await;
 
         // 批量取消所有任务
-        let cancelled = service.cancel_batch(&task_ids).await;
+        let cancelled = service.cancel_batch(&task_ids);
         assert_eq!(cancelled, 10, "All 10 tasks should be cancelled");
 
         // 等待确保回调不会执行
@@ -1057,7 +1056,7 @@ mod tests {
 
         // 只取消前5个任务
         let to_cancel: Vec<_> = task_ids.iter().take(5).copied().collect();
-        let cancelled = service.cancel_batch(&to_cancel).await;
+        let cancelled = service.cancel_batch(&to_cancel);
         assert_eq!(cancelled, 5, "5 tasks should be cancelled");
 
         // 等待确保前5个回调不会执行
@@ -1072,7 +1071,7 @@ mod tests {
 
         // 取消空列表
         let empty: Vec<TaskId> = vec![];
-        let cancelled = service.cancel_batch(&empty).await;
+        let cancelled = service.cancel_batch(&empty);
         assert_eq!(cancelled, 0, "No tasks should be cancelled");
     }
 
@@ -1097,7 +1096,7 @@ mod tests {
         service.register(task).await;
 
         // 推迟任务到 150ms
-        let postponed = service.postpone_task(task_id, Duration::from_millis(150)).await;
+        let postponed = service.postpone_task(task_id, Duration::from_millis(150));
         assert!(postponed, "Task should be postponed successfully");
 
         // 等待原定时间 50ms，任务不应该触发
@@ -1149,7 +1148,7 @@ mod tests {
                     counter.fetch_add(10, Ordering::SeqCst);
                 }
             }
-        ).await;
+        );
         assert!(postponed, "Task should be postponed successfully");
 
         // 接收超时通知（推迟后需要等待100ms，加上余量）
@@ -1178,7 +1177,7 @@ mod tests {
         let fake_task_id = fake_task.get_id();
         // 不注册这个任务
         
-        let postponed = service.postpone_task(fake_task_id, Duration::from_millis(100)).await;
+        let postponed = service.postpone_task(fake_task_id, Duration::from_millis(100));
         assert!(!postponed, "Nonexistent task should not be postponed");
     }
 
@@ -1206,7 +1205,7 @@ mod tests {
         }
 
         // 批量推迟
-        let postponed = service.postpone_batch(&task_ids).await;
+        let postponed = service.postpone_batch(&task_ids);
         assert_eq!(postponed, 3, "All 3 tasks should be postponed");
 
         // 等待原定时间 50ms，任务不应该触发
@@ -1265,7 +1264,7 @@ mod tests {
             })
             .collect();
 
-        let postponed = service.postpone_batch_with_callbacks(updates).await;
+        let postponed = service.postpone_batch_with_callbacks(updates);
         assert_eq!(postponed, 3, "All 3 tasks should be postponed");
 
         // 等待原定时间 50ms，任务不应该触发
@@ -1300,7 +1299,7 @@ mod tests {
 
         // 推迟空列表
         let empty: Vec<(TaskId, Duration)> = vec![];
-        let postponed = service.postpone_batch(&empty).await;
+        let postponed = service.postpone_batch(&empty);
         assert_eq!(postponed, 0, "No tasks should be postponed");
     }
 
@@ -1325,7 +1324,7 @@ mod tests {
         service.register(task).await;
 
         // 推迟任务
-        service.postpone_task(task_id, Duration::from_millis(100)).await;
+        service.postpone_task(task_id, Duration::from_millis(100));
 
         // 验证超时通知仍然有效（推迟后需要等待100ms，加上余量）
         let mut rx = service.take_receiver().unwrap();
@@ -1356,7 +1355,7 @@ mod tests {
         service.register(task2).await;
 
         // 取消第一个任务
-        let cancelled = service.cancel_task(task1_id).await;
+        let cancelled = service.cancel_task(task1_id);
         assert!(cancelled, "Task should be cancelled");
 
         // 等待第二个任务到期

@@ -1002,27 +1002,27 @@ while let Some(task_id) = rx.recv().await {
 }
 ```
 
-**`async fn cancel_task(&self, task_id: TaskId) -> bool`**
+**`fn cancel_task(&self, task_id: TaskId) -> bool`**
 
 取消指定的任务。
 
 返回：是否成功取消
 
 ```rust
-let cancelled = service.cancel_task(task_id).await;
+let cancelled = service.cancel_task(task_id);
 ```
 
-**`async fn cancel_batch(&self, task_ids: &[TaskId]) -> usize`**
+**`fn cancel_batch(&self, task_ids: &[TaskId]) -> usize`**
 
 批量取消任务。
 
 返回：成功取消的任务数量
 
 ```rust
-let cancelled_count = service.cancel_batch(&task_ids).await;
+let cancelled_count = service.cancel_batch(&task_ids);
 ```
 
-**`async fn postpone_task(&self, task_id: TaskId, new_delay: Duration) -> bool`**
+**`fn postpone_task(&self, task_id: TaskId, new_delay: Duration) -> bool`**
 
 推迟任务（保持原回调）。
 
@@ -1033,10 +1033,10 @@ let cancelled_count = service.cancel_batch(&task_ids).await;
 返回：是否成功推迟
 
 ```rust
-let postponed = service.postpone_task(task_id, Duration::from_secs(10)).await;
+let postponed = service.postpone_task(task_id, Duration::from_secs(10));
 ```
 
-**`async fn postpone_task_with_callback<C>(&self, task_id: TaskId, new_delay: Duration, callback: C) -> bool`**
+**`fn postpone_task_with_callback<C>(&self, task_id: TaskId, new_delay: Duration, callback: C) -> bool`**
 
 推迟任务并替换回调。
 
@@ -1052,10 +1052,10 @@ let postponed = service.postpone_task_with_callback(
     task_id,
     Duration::from_secs(10),
     || async { println!("新回调"); }
-).await;
+);
 ```
 
-**`async fn postpone_batch(&self, updates: &[(TaskId, Duration)]) -> usize`**
+**`fn postpone_batch(&self, updates: &[(TaskId, Duration)]) -> usize`**
 
 批量推迟任务（保持原回调）。
 
@@ -1063,10 +1063,10 @@ let postponed = service.postpone_task_with_callback(
 
 ```rust
 let updates = vec![(task_id1, Duration::from_secs(10))];
-let postponed = service.postpone_batch(&updates).await;
+let postponed = service.postpone_batch(&updates);
 ```
 
-**`async fn postpone_batch_with_callbacks<C>(&self, updates: Vec<(TaskId, Duration, C)>) -> usize`**
+**`fn postpone_batch_with_callbacks<C>(&self, updates: Vec<(TaskId, Duration, C)>) -> usize`**
 
 批量推迟任务并替换回调。
 
@@ -1076,7 +1076,7 @@ let postponed = service.postpone_batch(&updates).await;
 let updates = vec![
     (task_id1, Duration::from_secs(10), || async { println!("1"); }),
 ];
-let postponed = service.postpone_batch_with_callbacks(updates).await;
+let postponed = service.postpone_batch_with_callbacks(updates);
 ```
 
 **`shutdown(self) -> ()`**

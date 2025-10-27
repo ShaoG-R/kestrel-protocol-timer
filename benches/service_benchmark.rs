@@ -110,7 +110,7 @@ fn bench_cancel_single(c: &mut Criterion) {
                 let start = std::time::Instant::now();
                 
                 let result = black_box(
-                    service.cancel_task(task_id).await
+                    service.cancel_task(task_id)
                 );
                 
                 total_duration += start.elapsed();
@@ -151,7 +151,7 @@ fn bench_cancel_batch(c: &mut Criterion) {
                     let start = std::time::Instant::now();
                     
                     let cancelled = black_box(
-                        service.cancel_batch(&task_ids).await
+                        service.cancel_batch(&task_ids)
                     );
                     
                     total_duration += start.elapsed();
@@ -240,7 +240,7 @@ fn bench_high_frequency_cancel(c: &mut Criterion) {
                 let start = std::time::Instant::now();
                 
                 let cancelled = black_box(
-                    service.cancel_batch(&task_ids).await
+                    service.cancel_batch(&task_ids)
                 );
                 
                 total_duration += start.elapsed();
@@ -284,7 +284,7 @@ fn bench_mixed_operations(c: &mut Criterion) {
                     
                     // 使用批量取消前5个任务
                     let to_cancel: Vec<_> = task_ids.iter().take(5).copied().collect();
-                    let cancelled = service.cancel_batch(&to_cancel).await;
+                    let cancelled = service.cancel_batch(&to_cancel);
                     
                     black_box(cancelled);
                 }
@@ -439,7 +439,7 @@ fn bench_postpone_single(c: &mut Criterion) {
                 let start = std::time::Instant::now();
                 
                 let result = black_box(
-                    service.postpone_task(task_id, Duration::from_millis(200)).await
+                    service.postpone_task(task_id, Duration::from_millis(200))
                 );
                 
                 total_duration += start.elapsed();
@@ -486,7 +486,7 @@ fn bench_postpone_batch(c: &mut Criterion) {
                     let start = std::time::Instant::now();
                     
                     let postponed = black_box(
-                        service.postpone_batch(&postpone_updates).await
+                        service.postpone_batch(&postpone_updates)
                     );
                     
                     total_duration += start.elapsed();
@@ -538,7 +538,7 @@ fn bench_postpone_with_callback(c: &mut Criterion) {
                                 counter.fetch_add(1, Ordering::SeqCst);
                             }
                         }
-                    ).await
+                    )
                 );
                 
                 total_duration += start.elapsed();
@@ -594,7 +594,7 @@ fn bench_postpone_batch_with_callbacks(c: &mut Criterion) {
                     let start = std::time::Instant::now();
                     
                     let postponed = black_box(
-                        service.postpone_batch_with_callbacks(postpone_updates).await
+                        service.postpone_batch_with_callbacks(postpone_updates)
                     );
                     
                     total_duration += start.elapsed();
@@ -641,11 +641,11 @@ fn bench_mixed_operations_with_postpone(c: &mut Criterion) {
                     let to_postpone: Vec<_> = task_ids.iter().take(5)
                         .map(|&id| (id, Duration::from_secs(20)))
                         .collect();
-                    let postponed = service.postpone_batch(&to_postpone).await;
+                    let postponed = service.postpone_batch(&to_postpone);
                     
                     // 取消中间5个任务
                     let to_cancel: Vec<_> = task_ids.iter().skip(5).take(5).copied().collect();
-                    let cancelled = service.cancel_batch(&to_cancel).await;
+                    let cancelled = service.cancel_batch(&to_cancel);
                     
                     black_box((postponed, cancelled));
                 }
