@@ -215,16 +215,13 @@ pub struct TaskLocation {
     pub slot_index: usize,
     /// 任务在槽位 Vec 中的索引位置（用于 O(1) 取消）
     pub vec_index: usize,
-    #[allow(dead_code)]
-    pub task_id: TaskId,
 }
 
 impl TaskLocation {
-    pub fn new(slot_index: usize, vec_index: usize, task_id: TaskId) -> Self {
+    pub fn new(slot_index: usize, vec_index: usize) -> Self {
         Self {
             slot_index,
             vec_index,
-            task_id,
         }
     }
 }

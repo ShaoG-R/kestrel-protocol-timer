@@ -22,8 +22,6 @@ enum ServiceCommand {
         task_id: TaskId,
         completion_rx: tokio::sync::oneshot::Receiver<TaskCompletionReason>,
     },
-    /// 关闭 Service
-    Shutdown,
 }
 
 /// TimerService - 基于 Actor 模式的定时器服务
@@ -74,6 +72,8 @@ pub struct TimerService {
     actor_handle: Option<JoinHandle<()>>,
     /// 时间轮引用（用于直接调度定时器）
     wheel: Arc<Mutex<Wheel>>,
+    /// Actor 关闭信号发送端
+    shutdown_tx: Option<tokio::sync::oneshot::Sender<()>>,
 }
 
 impl TimerService {
@@ -100,7 +100,8 @@ impl TimerService {
         let (command_tx, command_rx) = mpsc::channel(config.command_channel_capacity);
         let (timeout_tx, timeout_rx) = mpsc::channel(config.timeout_channel_capacity);
 
-        let actor = ServiceActor::new(command_rx, timeout_tx);
+        let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+        let actor = ServiceActor::new(command_rx, timeout_tx, shutdown_rx);
         let actor_handle = tokio::spawn(async move {
             actor.run().await;
         });
@@ -110,6 +111,7 @@ impl TimerService {
             timeout_rx: Some(timeout_rx),
             actor_handle: Some(actor_handle),
             wheel,
+            shutdown_tx: Some(shutdown_tx),
         }
     }
 
@@ -631,7 +633,9 @@ impl TimerService {
     /// # }
     /// ```
     pub async fn shutdown(mut self) {
-        let _ = self.command_tx.send(ServiceCommand::Shutdown).await;
+        if let Some(shutdown_tx) = self.shutdown_tx.take() {
+            let _ = shutdown_tx.send(());
+        }
         if let Some(handle) = self.actor_handle.take() {
             let _ = handle.await;
         }
@@ -653,13 +657,16 @@ struct ServiceActor {
     command_rx: mpsc::Receiver<ServiceCommand>,
     /// 超时发送端
     timeout_tx: mpsc::Sender<TaskId>,
+    /// Actor 关闭信号接收端
+    shutdown_rx: tokio::sync::oneshot::Receiver<()>,
 }
 
 impl ServiceActor {
-    fn new(command_rx: mpsc::Receiver<ServiceCommand>, timeout_tx: mpsc::Sender<TaskId>) -> Self {
+    fn new(command_rx: mpsc::Receiver<ServiceCommand>, timeout_tx: mpsc::Sender<TaskId>, shutdown_rx: tokio::sync::oneshot::Receiver<()>) -> Self {
         Self {
             command_rx,
             timeout_tx,
+            shutdown_rx,
         }
     }
 
@@ -668,8 +675,17 @@ impl ServiceActor {
         // 每个 future 返回 (TaskId, Result)
         let mut futures: FuturesUnordered<BoxFuture<'static, (TaskId, Result<TaskCompletionReason, tokio::sync::oneshot::error::RecvError>)>> = FuturesUnordered::new();
 
+        // 将 shutdown_rx 移出 self，以便在 select! 中使用 &mut
+        let mut shutdown_rx = self.shutdown_rx;
+
         loop {
             tokio::select! {
+                // 监听高优先级的关闭信号
+                _ = &mut shutdown_rx => {
+                    // 收到关闭信号，立即退出循环
+                    break;
+                }
+
                 // 监听超时事件
                 Some((task_id, result)) = futures.next() => {
                     // 检查完成原因，只转发超时（Expired）事件，不转发取消（Cancelled）事件
@@ -698,9 +714,6 @@ impl ServiceActor {
                                 (task_id, completion_rx.await)
                             });
                             futures.push(future);
-                        }
-                        ServiceCommand::Shutdown => {
-                            break;
                         }
                     }
                 }

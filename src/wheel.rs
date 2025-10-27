@@ -109,7 +109,7 @@ impl Wheel {
         
         // 获取任务在 Vec 中的索引位置（插入前的长度就是新任务的索引）
         let vec_index = self.slots[slot_index].len();
-        let location = TaskLocation::new(slot_index, vec_index, task_id);
+        let location = TaskLocation::new(slot_index, vec_index);
 
         // 插入任务到槽位
         self.slots[slot_index].push(task);
@@ -156,7 +156,7 @@ impl Wheel {
             
             // 获取任务在 Vec 中的索引位置
             let vec_index = self.slots[slot_index].len();
-            let location = TaskLocation::new(slot_index, vec_index, task_id);
+            let location = TaskLocation::new(slot_index, vec_index);
 
             // 插入任务到槽位
             self.slots[slot_index].push(task);
@@ -408,7 +408,7 @@ impl Wheel {
                 
                 // 步骤4: 重新插入任务到新槽位
                 let new_vec_index = self.slots[new_slot_index].len();
-                let new_location = TaskLocation::new(new_slot_index, new_vec_index, task_id);
+                let new_location = TaskLocation::new(new_slot_index, new_vec_index);
                 
                 self.slots[new_slot_index].push(task);
                 self.task_index.insert(task_id, new_location);
