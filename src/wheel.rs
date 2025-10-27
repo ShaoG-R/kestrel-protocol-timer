@@ -30,34 +30,12 @@ impl Wheel {
     ///
     /// # 参数
     /// - `config`: 时间轮配置（已经过验证）
+    /// - `batch_config`: 批处理配置
     ///
     /// # 注意
     /// 配置参数已在 WheelConfig::builder().build() 中验证，
     /// 因此此方法不会失败。
-    pub fn new(config: WheelConfig) -> Self {
-        let slot_count = config.slot_count;
-        let mut slots = Vec::with_capacity(slot_count);
-        for _ in 0..slot_count {
-            slots.push(Vec::new());
-        }
-
-        Self {
-            slots,
-            current_tick: 0,
-            slot_count,
-            tick_duration: config.tick_duration,
-            task_index: FxHashMap::default(),
-            batch_config: BatchConfig::default(),
-        }
-    }
-    
-    /// 创建带批处理配置的时间轮
-    ///
-    /// # 参数
-    /// - `config`: 时间轮配置（已经过验证）
-    /// - `batch_config`: 批处理配置
-    #[allow(dead_code)]
-    pub fn with_batch_config(config: WheelConfig, batch_config: BatchConfig) -> Self {
+    pub fn new(config: WheelConfig, batch_config: BatchConfig) -> Self {
         let slot_count = config.slot_count;
         let mut slots = Vec::with_capacity(slot_count);
         for _ in 0..slot_count {
@@ -501,7 +479,7 @@ mod tests {
 
     #[test]
     fn test_wheel_creation() {
-        let wheel = Wheel::new(WheelConfig::default());
+        let wheel = Wheel::new(WheelConfig::default(), BatchConfig::default());
         assert_eq!(wheel.slot_count(), 512);
         assert_eq!(wheel.current_tick(), 0);
         assert!(wheel.is_empty());
@@ -509,7 +487,7 @@ mod tests {
 
     #[test]
     fn test_delay_to_ticks() {
-        let wheel = Wheel::new(WheelConfig::default());
+        let wheel = Wheel::new(WheelConfig::default(), BatchConfig::default());
         assert_eq!(wheel.delay_to_ticks(Duration::from_millis(100)), 10);
         assert_eq!(wheel.delay_to_ticks(Duration::from_millis(50)), 5);
         assert_eq!(wheel.delay_to_ticks(Duration::from_millis(1)), 1); // 最小 1 tick
@@ -533,7 +511,7 @@ mod tests {
     fn test_insert_batch() {
         use crate::task::{TimerTask, CompletionNotifier};
         
-        let mut wheel = Wheel::new(WheelConfig::default());
+        let mut wheel = Wheel::new(WheelConfig::default(), BatchConfig::default());
         
         // 创建批量任务
         let tasks: Vec<(TimerTask, CompletionNotifier)> = (0..10)
@@ -556,7 +534,7 @@ mod tests {
     fn test_cancel_batch() {
         use crate::task::{TimerTask, CompletionNotifier};
         
-        let mut wheel = Wheel::new(WheelConfig::default());
+        let mut wheel = Wheel::new(WheelConfig::default(), BatchConfig::default());
         
         // 插入多个任务
         let mut task_ids = Vec::new();
@@ -593,7 +571,7 @@ mod tests {
     fn test_batch_operations_same_slot() {
         use crate::task::{TimerTask, CompletionNotifier};
         
-        let mut wheel = Wheel::new(WheelConfig::default());
+        let mut wheel = Wheel::new(WheelConfig::default(), BatchConfig::default());
         
         // 插入多个相同延迟的任务（会进入同一个槽位）
         let mut task_ids = Vec::new();
@@ -616,7 +594,7 @@ mod tests {
     fn test_postpone_single_task() {
         use crate::task::{TimerTask, CompletionNotifier};
         
-        let mut wheel = Wheel::new(WheelConfig::default());
+        let mut wheel = Wheel::new(WheelConfig::default(), BatchConfig::default());
         
         // 插入任务，延迟 100ms
         let callback = CallbackWrapper::new(|| async {});
@@ -656,7 +634,7 @@ mod tests {
     fn test_postpone_with_new_callback() {
         use crate::task::{TimerTask, CompletionNotifier};
         
-        let mut wheel = Wheel::new(WheelConfig::default());
+        let mut wheel = Wheel::new(WheelConfig::default(), BatchConfig::default());
         
         // 插入任务，带原始回调
         let old_callback = CallbackWrapper::new(|| async {});
@@ -687,7 +665,7 @@ mod tests {
 
     #[test]
     fn test_postpone_nonexistent_task() {
-        let mut wheel = Wheel::new(WheelConfig::default());
+        let mut wheel = Wheel::new(WheelConfig::default(), BatchConfig::default());
         
         // 尝试推迟不存在的任务
         let fake_task_id = TaskId::new();
@@ -699,7 +677,7 @@ mod tests {
     fn test_postpone_batch() {
         use crate::task::{TimerTask, CompletionNotifier};
         
-        let mut wheel = Wheel::new(WheelConfig::default());
+        let mut wheel = Wheel::new(WheelConfig::default(), BatchConfig::default());
         
         // 插入 5 个任务，延迟 50ms（5 ticks）
         let mut task_ids = Vec::new();
@@ -739,7 +717,7 @@ mod tests {
     fn test_postpone_batch_partial() {
         use crate::task::{TimerTask, CompletionNotifier};
         
-        let mut wheel = Wheel::new(WheelConfig::default());
+        let mut wheel = Wheel::new(WheelConfig::default(), BatchConfig::default());
         
         // 插入 10 个任务，延迟 50ms（5 ticks）
         let mut task_ids = Vec::new();
@@ -784,7 +762,7 @@ mod tests {
     fn test_multi_round_tasks() {
         use crate::task::{TimerTask, CompletionNotifier};
         
-        let mut wheel = Wheel::new(WheelConfig::default());
+        let mut wheel = Wheel::new(WheelConfig::default(), BatchConfig::default());
         
         // 插入一个超过一圈的任务（512 slots * 10ms = 5120ms）
         // 延迟 6000ms 需要跨越多个轮次
@@ -822,7 +800,7 @@ mod tests {
     fn test_minimum_delay() {
         use crate::task::{TimerTask, CompletionNotifier};
         
-        let mut wheel = Wheel::new(WheelConfig::default());
+        let mut wheel = Wheel::new(WheelConfig::default(), BatchConfig::default());
         
         // 测试最小延迟（小于 1 tick 的延迟应该向上取整为 1 tick）
         let callback = CallbackWrapper::new(|| async {});
@@ -839,7 +817,7 @@ mod tests {
 
     #[test]
     fn test_empty_batch_operations() {
-        let mut wheel = Wheel::new(WheelConfig::default());
+        let mut wheel = Wheel::new(WheelConfig::default(), BatchConfig::default());
         
         // 测试空批量插入
         let task_ids = wheel.insert_batch(vec![]);
@@ -858,7 +836,7 @@ mod tests {
     fn test_postpone_same_task_multiple_times() {
         use crate::task::{TimerTask, CompletionNotifier};
         
-        let mut wheel = Wheel::new(WheelConfig::default());
+        let mut wheel = Wheel::new(WheelConfig::default(), BatchConfig::default());
         
         // 插入任务
         let callback = CallbackWrapper::new(|| async {});
@@ -895,7 +873,7 @@ mod tests {
 
     #[test]
     fn test_advance_empty_slots() {
-        let mut wheel = Wheel::new(WheelConfig::default());
+        let mut wheel = Wheel::new(WheelConfig::default(), BatchConfig::default());
         
         // 不插入任何任务，推进多个 tick
         for _ in 0..100 {
@@ -910,7 +888,7 @@ mod tests {
     fn test_cancel_after_postpone() {
         use crate::task::{TimerTask, CompletionNotifier};
         
-        let mut wheel = Wheel::new(WheelConfig::default());
+        let mut wheel = Wheel::new(WheelConfig::default(), BatchConfig::default());
         
         // 插入任务
         let callback = CallbackWrapper::new(|| async {});
@@ -940,7 +918,7 @@ mod tests {
     fn test_slot_boundary() {
         use crate::task::{TimerTask, CompletionNotifier};
         
-        let mut wheel = Wheel::new(WheelConfig::default());
+        let mut wheel = Wheel::new(WheelConfig::default(), BatchConfig::default());
         
         // 测试槽位边界和环绕
         // 第一个任务：延迟 10ms（1 tick），应该在 slot 1 触发
@@ -984,7 +962,7 @@ mod tests {
         let batch_config = BatchConfig {
             small_batch_threshold: 5,
         };
-        let mut wheel = Wheel::with_batch_config(WheelConfig::default(), batch_config);
+        let mut wheel = Wheel::new(WheelConfig::default(), batch_config);
         
         // 插入 10 个任务
         let mut task_ids = Vec::new();
@@ -1011,7 +989,7 @@ mod tests {
     fn test_task_id_uniqueness() {
         use crate::task::{TimerTask, CompletionNotifier};
         
-        let mut wheel = Wheel::new(WheelConfig::default());
+        let mut wheel = Wheel::new(WheelConfig::default(), BatchConfig::default());
         
         // 插入多个任务，验证 TaskId 唯一性
         let mut task_ids = std::collections::HashSet::new();

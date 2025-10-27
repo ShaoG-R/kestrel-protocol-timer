@@ -1,7 +1,7 @@
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use kestrel_protocol_timer::{TimerWheel, CallbackWrapper};
+use kestrel_protocol_timer::{TimerWheel, CallbackWrapper, TimerService, ServiceConfig};
 use futures::future;
 
 #[tokio::test]
@@ -555,11 +555,11 @@ async fn test_postpone_multiple_times() {
 async fn test_postpone_with_service() {
     // 测试通过 TimerService 推迟定时器
     let timer = TimerWheel::with_defaults();
-    let mut service = timer.create_service();
+    let mut service = timer.create_service(ServiceConfig::default());
     let counter = Arc::new(AtomicU32::new(0));
     let counter_clone = Arc::clone(&counter);
 
-    let task = kestrel_protocol_timer::TimerService::create_task(
+    let task = TimerService::create_task(
         Duration::from_millis(50),
         Some(CallbackWrapper::new(move || {
             let counter = Arc::clone(&counter_clone);

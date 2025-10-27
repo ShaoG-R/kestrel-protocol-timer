@@ -2,9 +2,8 @@ use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
-use kestrel_protocol_timer::TimerWheel;
 use std::hint::black_box;
-use kestrel_protocol_timer::CallbackWrapper;
+use kestrel_protocol_timer::{CallbackWrapper, ServiceConfig, TimerWheel};
 
 /// 基准测试：单个定时器调度
 fn bench_schedule_single(c: &mut Criterion) {
@@ -19,7 +18,7 @@ fn bench_schedule_single(c: &mut Criterion) {
             for _ in 0..iters {
                 // 准备阶段：创建 timer 和 service（不计入测量）
                 let timer = TimerWheel::with_defaults();
-                let service = timer.create_service();
+                let service = timer.create_service(ServiceConfig::default());
                 
                 // 测量阶段：只测量 create_task + register 的性能
                 let start = std::time::Instant::now();
@@ -58,7 +57,7 @@ fn bench_schedule_batch(c: &mut Criterion) {
                 for _ in 0..iters {
                     // 准备阶段：创建 timer 和 service（不计入测量）
                     let timer = TimerWheel::with_defaults();
-                    let service = timer.create_service();
+                    let service = timer.create_service(ServiceConfig::default());
                     
                     let delays: Vec<_> = (0..size)
                         .map(|_| Duration::from_secs(10))
@@ -98,7 +97,7 @@ fn bench_cancel_single(c: &mut Criterion) {
             for _ in 0..iters {
                 // 准备阶段：创建 timer、service 和调度任务（不计入测量）
                 let timer = TimerWheel::with_defaults();
-                let service = timer.create_service();
+                let service = timer.create_service(ServiceConfig::default());
                 
                 let task = kestrel_protocol_timer::TimerService::create_task(
                     Duration::from_secs(10),
@@ -139,7 +138,7 @@ fn bench_cancel_batch(c: &mut Criterion) {
                 for _ in 0..iters {
                     // 准备阶段：创建 timer、service 和调度任务（不计入测量）
                     let timer = TimerWheel::with_defaults();
-                    let service = timer.create_service();
+                    let service = timer.create_service(ServiceConfig::default());
                     
                     let delays: Vec<_> = (0..size)
                         .map(|_| Duration::from_secs(10))
@@ -181,7 +180,7 @@ fn bench_concurrent_schedule(c: &mut Criterion) {
                 for _ in 0..iters {
                     // 准备阶段：创建 timer 和 service（不计入测量）
                     let timer = TimerWheel::with_defaults();
-                    let service = Arc::new(timer.create_service());
+                    let service = Arc::new(timer.create_service(ServiceConfig::default()));
                     
                     // 测量阶段：只测量并发调度的性能
                     let start = std::time::Instant::now();
@@ -228,7 +227,7 @@ fn bench_high_frequency_cancel(c: &mut Criterion) {
             for _ in 0..iters {
                 // 准备阶段：创建 timer、service 和调度任务（不计入测量）
                 let timer = TimerWheel::with_defaults();
-                let service = timer.create_service();
+                let service = timer.create_service(ServiceConfig::default());
                 
                 let delays: Vec<_> = (0..1000)
                     .map(|_| Duration::from_secs(10))
@@ -268,7 +267,7 @@ fn bench_mixed_operations(c: &mut Criterion) {
             for _ in 0..iters {
                 // 准备阶段：创建 timer 和 service（不计入测量）
                 let timer = TimerWheel::with_defaults();
-                let service = timer.create_service();
+                let service = timer.create_service(ServiceConfig::default());
                 
                 // 测量阶段：测量混合操作的性能
                 let start = std::time::Instant::now();
@@ -313,7 +312,7 @@ fn bench_schedule_notify(c: &mut Criterion) {
             for _ in 0..iters {
                 // 准备阶段：创建 timer 和 service（不计入测量）
                 let timer = TimerWheel::with_defaults();
-                let service = timer.create_service();
+                let service = timer.create_service(ServiceConfig::default());
                 
                 // 测量阶段：只测量仅通知定时器的创建和注册性能
                 let start = std::time::Instant::now();
@@ -342,7 +341,7 @@ fn bench_schedule_notify(c: &mut Criterion) {
                 for _ in 0..iters {
                     // 准备阶段：创建 timer 和 service（不计入测量）
                     let timer = TimerWheel::with_defaults();
-                    let service = timer.create_service();
+                    let service = timer.create_service(ServiceConfig::default());
                     
                     // 测量阶段：测量批量通知调度的性能
                     let start = std::time::Instant::now();
@@ -381,7 +380,7 @@ fn bench_schedule_with_callback(c: &mut Criterion) {
             for _ in 0..iters {
                 // 准备阶段：创建 timer、service 和 counter（不计入测量）
                 let timer = TimerWheel::with_defaults();
-                let service = timer.create_service();
+                let service = timer.create_service(ServiceConfig::default());
                 let counter = Arc::new(AtomicU32::new(0));
                 
                 // 测量阶段：只测量 create_task + register 的性能
@@ -427,7 +426,7 @@ fn bench_postpone_single(c: &mut Criterion) {
             for _ in 0..iters {
                 // 准备阶段：创建 timer、service 和调度任务（不计入测量）
                 let timer = TimerWheel::with_defaults();
-                let service = timer.create_service();
+                let service = timer.create_service(ServiceConfig::default());
                 
                 let task = kestrel_protocol_timer::TimerService::create_task(
                     Duration::from_millis(100),
@@ -468,7 +467,7 @@ fn bench_postpone_batch(c: &mut Criterion) {
                 for _ in 0..iters {
                     // 准备阶段：创建 timer、service 和调度任务（不计入测量）
                     let timer = TimerWheel::with_defaults();
-                    let service = timer.create_service();
+                    let service = timer.create_service(ServiceConfig::default());
                     
                     let delays: Vec<_> = (0..size)
                         .map(|_| Duration::from_millis(100))
@@ -515,7 +514,7 @@ fn bench_postpone_with_callback(c: &mut Criterion) {
             for _ in 0..iters {
                 // 准备阶段：创建 timer、service 和调度任务（不计入测量）
                 let timer = TimerWheel::with_defaults();
-                let service = timer.create_service();
+                let service = timer.create_service(ServiceConfig::default());
                 let counter = Arc::new(AtomicU32::new(0));
                 
                 let task = kestrel_protocol_timer::TimerService::create_task(
@@ -567,7 +566,7 @@ fn bench_postpone_batch_with_callbacks(c: &mut Criterion) {
                 for _ in 0..iters {
                     // 准备阶段：创建 timer、service 和调度任务（不计入测量）
                     let timer = TimerWheel::with_defaults();
-                    let service = timer.create_service();
+                    let service = timer.create_service(ServiceConfig::default());
                     let counter = Arc::new(AtomicU32::new(0));
                     
                     let delays: Vec<_> = (0..size)
@@ -623,7 +622,7 @@ fn bench_mixed_operations_with_postpone(c: &mut Criterion) {
             for _ in 0..iters {
                 // 准备阶段：创建 timer 和 service（不计入测量）
                 let timer = TimerWheel::with_defaults();
-                let service = timer.create_service();
+                let service = timer.create_service(ServiceConfig::default());
                 
                 // 测量阶段：测量混合操作的性能
                 let start = std::time::Instant::now();

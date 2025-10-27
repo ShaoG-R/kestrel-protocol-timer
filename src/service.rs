@@ -38,13 +38,13 @@ enum ServiceCommand {
 ///
 /// # 示例
 /// ```no_run
-/// use kestrel_protocol_timer::{TimerWheel, TimerService, CallbackWrapper};
+/// use kestrel_protocol_timer::{TimerWheel, TimerService, CallbackWrapper, ServiceConfig};
 /// use std::time::Duration;
 ///
 /// #[tokio::main]
 /// async fn main() {
 ///     let timer = TimerWheel::with_defaults();
-///     let mut service = timer.create_service();
+///     let mut service = timer.create_service(ServiceConfig::default());
 ///     
 ///     // 使用两步式 API 通过 service 批量调度定时器
 ///     let callbacks: Vec<(Duration, Option<CallbackWrapper>)> = (0..5)
@@ -88,12 +88,12 @@ impl TimerService {
     ///
     /// # 示例
     /// ```no_run
-    /// use kestrel_protocol_timer::TimerWheel;
+    /// use kestrel_protocol_timer::{TimerWheel, ServiceConfig};
     ///
     /// #[tokio::main]
     /// async fn main() {
     ///     let timer = TimerWheel::with_defaults();
-    ///     let mut service = timer.create_service();
+    ///     let mut service = timer.create_service(ServiceConfig::default());
     /// }
     /// ```
     pub(crate) fn new(wheel: Arc<Mutex<Wheel>>, config: ServiceConfig) -> Self {
@@ -123,12 +123,12 @@ impl TimerService {
     ///
     /// # 示例
     /// ```no_run
-    /// # use kestrel_protocol_timer::TimerWheel;
+    /// # use kestrel_protocol_timer::{TimerWheel, ServiceConfig};
     /// # use std::time::Duration;
     /// # #[tokio::main]
     /// # async fn main() {
     /// let timer = TimerWheel::with_defaults();
-    /// let mut service = timer.create_service();
+    /// let mut service = timer.create_service(ServiceConfig::default());
     /// 
     /// let mut rx = service.take_receiver().unwrap();
     /// while let Some(task_id) = rx.recv().await {
@@ -154,13 +154,13 @@ impl TimerService {
     ///
     /// # 示例
     /// ```no_run
-    /// # use kestrel_protocol_timer::{TimerWheel, TimerService, CallbackWrapper};
+    /// # use kestrel_protocol_timer::{TimerWheel, TimerService, CallbackWrapper, ServiceConfig};
     /// # use std::time::Duration;
     /// # 
     /// # #[tokio::main]
     /// # async fn main() {
     /// let timer = TimerWheel::with_defaults();
-    /// let service = timer.create_service();
+    /// let service = timer.create_service(ServiceConfig::default());
     /// 
     /// // 使用两步式 API 调度定时器
     /// let callback = Some(CallbackWrapper::new(|| async move {
@@ -195,13 +195,13 @@ impl TimerService {
     ///
     /// # 示例
     /// ```no_run
-    /// # use kestrel_protocol_timer::{TimerWheel, TimerService, CallbackWrapper};
+    /// # use kestrel_protocol_timer::{TimerWheel, TimerService, CallbackWrapper, ServiceConfig};
     /// # use std::time::Duration;
     /// # 
     /// # #[tokio::main]
     /// # async fn main() {
     /// let timer = TimerWheel::with_defaults();
-    /// let service = timer.create_service();
+    /// let service = timer.create_service(ServiceConfig::default());
     /// 
     /// let callbacks: Vec<(Duration, Option<CallbackWrapper>)> = (0..10)
     ///     .map(|i| {
@@ -250,13 +250,13 @@ impl TimerService {
     ///
     /// # 示例
     /// ```no_run
-    /// # use kestrel_protocol_timer::{TimerWheel, TimerService, CallbackWrapper};
+    /// # use kestrel_protocol_timer::{TimerWheel, TimerService, CallbackWrapper, ServiceConfig};
     /// # use std::time::Duration;
     /// # 
     /// # #[tokio::main]
     /// # async fn main() {
     /// let timer = TimerWheel::with_defaults();
-    /// let service = timer.create_service();
+    /// let service = timer.create_service(ServiceConfig::default());
     /// 
     /// let callback = Some(CallbackWrapper::new(|| async {
     ///     println!("Original callback");
@@ -291,13 +291,13 @@ impl TimerService {
     ///
     /// # 示例
     /// ```no_run
-    /// # use kestrel_protocol_timer::{TimerWheel, TimerService, CallbackWrapper};
+    /// # use kestrel_protocol_timer::{TimerWheel, TimerService, CallbackWrapper, ServiceConfig};
     /// # use std::time::Duration;
     /// # 
     /// # #[tokio::main]
     /// # async fn main() {
     /// let timer = TimerWheel::with_defaults();
-    /// let service = timer.create_service();
+    /// let service = timer.create_service(ServiceConfig::default());
     /// 
     /// let callbacks: Vec<(Duration, Option<CallbackWrapper>)> = (0..3)
     ///     .map(|i| {
@@ -340,13 +340,13 @@ impl TimerService {
     ///
     /// # 示例
     /// ```no_run
-    /// # use kestrel_protocol_timer::{TimerWheel, TimerService, CallbackWrapper};
+    /// # use kestrel_protocol_timer::{TimerWheel, TimerService, CallbackWrapper, ServiceConfig};
     /// # use std::time::Duration;
     /// # 
     /// # #[tokio::main]
     /// # async fn main() {
     /// let timer = TimerWheel::with_defaults();
-    /// let service = timer.create_service();
+    /// let service = timer.create_service(ServiceConfig::default());
     /// 
     /// // 创建 3 个任务，初始没有回调
     /// let delays: Vec<Duration> = (0..3)
@@ -395,13 +395,13 @@ impl TimerService {
     /// 
     /// # 示例
     /// ```no_run
-    /// # use kestrel_protocol_timer::{TimerWheel, TimerService, CallbackWrapper};
+    /// # use kestrel_protocol_timer::{TimerWheel, TimerService, CallbackWrapper, ServiceConfig};
     /// # use std::time::Duration;
     /// # 
     /// # #[tokio::main]
     /// # async fn main() {
     /// let timer = TimerWheel::with_defaults();
-    /// let service = timer.create_service();
+    /// let service = timer.create_service(ServiceConfig::default());
     /// 
     /// // 步骤 1: 创建任务
     /// let callback = Some(CallbackWrapper::new(|| async {
@@ -431,13 +431,13 @@ impl TimerService {
     /// 
     /// # 示例
     /// ```no_run
-    /// # use kestrel_protocol_timer::{TimerWheel, TimerService, CallbackWrapper};
+    /// # use kestrel_protocol_timer::{TimerWheel, TimerService, CallbackWrapper, ServiceConfig};
     /// # use std::time::Duration;
     /// # 
     /// # #[tokio::main]
     /// # async fn main() {
     /// let timer = TimerWheel::with_defaults();
-    /// let service = timer.create_service();
+    /// let service = timer.create_service(ServiceConfig::default());
     /// 
     /// // 步骤 1: 批量创建任务
     /// let delays: Vec<Duration> = (0..3)
@@ -466,13 +466,13 @@ impl TimerService {
     /// 
     /// # 示例
     /// ```no_run
-    /// # use kestrel_protocol_timer::{TimerWheel, TimerService, CallbackWrapper};
+    /// # use kestrel_protocol_timer::{TimerWheel, TimerService, CallbackWrapper, ServiceConfig};
     /// # use std::time::Duration;
     /// # 
     /// # #[tokio::main]
     /// # async fn main() {
     /// let timer = TimerWheel::with_defaults();
-    /// let service = timer.create_service();
+    /// let service = timer.create_service(ServiceConfig::default());
     /// 
     /// // 步骤 1: 批量创建任务
     /// let callbacks: Vec<(Duration, Option<CallbackWrapper>)> = (0..3)
@@ -507,13 +507,13 @@ impl TimerService {
     /// 
     /// # 示例
     /// ```no_run
-    /// # use kestrel_protocol_timer::{TimerWheel, TimerService, CallbackWrapper};
+    /// # use kestrel_protocol_timer::{TimerWheel, TimerService, CallbackWrapper, ServiceConfig};
     /// # use std::time::Duration;
     /// # 
     /// # #[tokio::main]
     /// # async fn main() {
     /// let timer = TimerWheel::with_defaults();
-    /// let service = timer.create_service();
+    /// let service = timer.create_service(ServiceConfig::default());
     /// 
     /// let callback = Some(CallbackWrapper::new(|| async move {
     ///     println!("Timer fired!");
@@ -559,13 +559,13 @@ impl TimerService {
     /// 
     /// # 示例
     /// ```no_run
-    /// # use kestrel_protocol_timer::{TimerWheel, TimerService, CallbackWrapper};
+    /// # use kestrel_protocol_timer::{TimerWheel, TimerService, CallbackWrapper, ServiceConfig};
     /// # use std::time::Duration;
     /// # 
     /// # #[tokio::main]
     /// # async fn main() {
     /// let timer = TimerWheel::with_defaults();
-    /// let service = timer.create_service();
+    /// let service = timer.create_service(ServiceConfig::default());
     /// 
     /// let callbacks: Vec<(Duration, Option<CallbackWrapper>)> = (0..3)
     ///     .map(|i| {
@@ -619,11 +619,11 @@ impl TimerService {
     ///
     /// # 示例
     /// ```no_run
-    /// # use kestrel_protocol_timer::TimerWheel;
+    /// # use kestrel_protocol_timer::{TimerWheel, ServiceConfig};
     /// # #[tokio::main]
     /// # async fn main() {
     /// let timer = TimerWheel::with_defaults();
-    /// let mut service = timer.create_service();
+    /// let mut service = timer.create_service(ServiceConfig::default());
     /// 
     /// // 使用 service...
     /// 
@@ -725,14 +725,14 @@ mod tests {
     #[tokio::test]
     async fn test_service_creation() {
         let timer = TimerWheel::with_defaults();
-        let _service = timer.create_service();
+        let _service = timer.create_service(ServiceConfig::default());
     }
 
 
     #[tokio::test]
     async fn test_add_timer_handle_and_receive_timeout() {
         let timer = TimerWheel::with_defaults();
-        let mut service = timer.create_service();
+        let mut service = timer.create_service(ServiceConfig::default());
 
         // 创建单个定时器
         let task = TimerService::create_task(Duration::from_millis(50), Some(CallbackWrapper::new(|| async {})));
@@ -755,7 +755,7 @@ mod tests {
     #[tokio::test]
     async fn test_shutdown() {
         let timer = TimerWheel::with_defaults();
-        let service = timer.create_service();
+        let service = timer.create_service(ServiceConfig::default());
 
         // 添加一些定时器
         let task1 = TimerService::create_task(Duration::from_secs(10), None);
@@ -772,7 +772,7 @@ mod tests {
     #[tokio::test]
     async fn test_cancel_task() {
         let timer = TimerWheel::with_defaults();
-        let service = timer.create_service();
+        let service = timer.create_service(ServiceConfig::default());
 
         // 添加一个长时间的定时器
         let task = TimerService::create_task(Duration::from_secs(10), None);
@@ -792,7 +792,7 @@ mod tests {
     #[tokio::test]
     async fn test_cancel_nonexistent_task() {
         let timer = TimerWheel::with_defaults();
-        let service = timer.create_service();
+        let service = timer.create_service(ServiceConfig::default());
 
         // 添加一个定时器以初始化 service
         let task = TimerService::create_task(Duration::from_millis(50), None);
@@ -810,7 +810,7 @@ mod tests {
     #[tokio::test]
     async fn test_task_timeout_cleans_up_task_sender() {
         let timer = TimerWheel::with_defaults();
-        let mut service = timer.create_service();
+        let mut service = timer.create_service(ServiceConfig::default());
 
         // 添加一个短时间的定时器
         let task = TimerService::create_task(Duration::from_millis(50), None);
@@ -838,7 +838,7 @@ mod tests {
     #[tokio::test]
     async fn test_cancel_task_spawns_background_task() {
         let timer = TimerWheel::with_defaults();
-        let service = timer.create_service();
+        let service = timer.create_service(ServiceConfig::default());
         let counter = Arc::new(AtomicU32::new(0));
 
         // 创建一个定时器
@@ -872,7 +872,7 @@ mod tests {
     #[tokio::test]
     async fn test_schedule_once_direct() {
         let timer = TimerWheel::with_defaults();
-        let mut service = timer.create_service();
+        let mut service = timer.create_service(ServiceConfig::default());
         let counter = Arc::new(AtomicU32::new(0));
 
         // 直接通过 service 调度定时器
@@ -906,7 +906,7 @@ mod tests {
     #[tokio::test]
     async fn test_schedule_once_batch_direct() {
         let timer = TimerWheel::with_defaults();
-        let mut service = timer.create_service();
+        let mut service = timer.create_service(ServiceConfig::default());
         let counter = Arc::new(AtomicU32::new(0));
 
         // 直接通过 service 批量调度定时器
@@ -950,7 +950,7 @@ mod tests {
     #[tokio::test]
     async fn test_schedule_once_notify_direct() {
         let timer = TimerWheel::with_defaults();
-        let mut service = timer.create_service();
+        let mut service = timer.create_service(ServiceConfig::default());
 
         // 直接通过 service 调度仅通知的定时器（无回调）
         let task = TimerService::create_task(Duration::from_millis(50), None);
@@ -970,7 +970,7 @@ mod tests {
     #[tokio::test]
     async fn test_schedule_and_cancel_direct() {
         let timer = TimerWheel::with_defaults();
-        let service = timer.create_service();
+        let service = timer.create_service(ServiceConfig::default());
         let counter = Arc::new(AtomicU32::new(0));
 
         // 直接调度定时器
@@ -999,7 +999,7 @@ mod tests {
     #[tokio::test]
     async fn test_cancel_batch_direct() {
         let timer = TimerWheel::with_defaults();
-        let service = timer.create_service();
+        let service = timer.create_service(ServiceConfig::default());
         let counter = Arc::new(AtomicU32::new(0));
 
         // 批量调度定时器
@@ -1032,7 +1032,7 @@ mod tests {
     #[tokio::test]
     async fn test_cancel_batch_partial() {
         let timer = TimerWheel::with_defaults();
-        let service = timer.create_service();
+        let service = timer.create_service(ServiceConfig::default());
         let counter = Arc::new(AtomicU32::new(0));
 
         // 批量调度定时器
@@ -1065,7 +1065,7 @@ mod tests {
     #[tokio::test]
     async fn test_cancel_batch_empty() {
         let timer = TimerWheel::with_defaults();
-        let service = timer.create_service();
+        let service = timer.create_service(ServiceConfig::default());
 
         // 取消空列表
         let empty: Vec<TaskId> = vec![];
@@ -1076,7 +1076,7 @@ mod tests {
     #[tokio::test]
     async fn test_postpone() {
         let timer = TimerWheel::with_defaults();
-        let mut service = timer.create_service();
+        let mut service = timer.create_service(ServiceConfig::default());
         let counter = Arc::new(AtomicU32::new(0));
 
         // 注册一个任务，原始回调增加 1
@@ -1126,7 +1126,7 @@ mod tests {
     #[tokio::test]
     async fn test_postpone_nonexistent_task() {
         let timer = TimerWheel::with_defaults();
-        let service = timer.create_service();
+        let service = timer.create_service(ServiceConfig::default());
 
         // 尝试推迟一个不存在的任务
         let fake_task = TimerService::create_task(Duration::from_millis(50), None);
@@ -1140,7 +1140,7 @@ mod tests {
     #[tokio::test]
     async fn test_postpone_batch() {
         let timer = TimerWheel::with_defaults();
-        let mut service = timer.create_service();
+        let mut service = timer.create_service(ServiceConfig::default());
         let counter = Arc::new(AtomicU32::new(0));
 
         // 注册 3 个任务
@@ -1192,7 +1192,7 @@ mod tests {
     #[tokio::test]
     async fn test_postpone_batch_with_callbacks() {
         let timer = TimerWheel::with_defaults();
-        let mut service = timer.create_service();
+        let mut service = timer.create_service(ServiceConfig::default());
         let counter = Arc::new(AtomicU32::new(0));
 
         // 注册 3 个任务
@@ -1251,7 +1251,7 @@ mod tests {
     #[tokio::test]
     async fn test_postpone_batch_empty() {
         let timer = TimerWheel::with_defaults();
-        let service = timer.create_service();
+        let service = timer.create_service(ServiceConfig::default());
 
         // 推迟空列表
         let empty: Vec<(TaskId, Duration, Option<CallbackWrapper>)> = vec![];
@@ -1262,7 +1262,7 @@ mod tests {
     #[tokio::test]
     async fn test_postpone_keeps_timeout_notification_valid() {
         let timer = TimerWheel::with_defaults();
-        let mut service = timer.create_service();
+        let mut service = timer.create_service(ServiceConfig::default());
         let counter = Arc::new(AtomicU32::new(0));
 
         // 注册一个任务
@@ -1299,7 +1299,7 @@ mod tests {
     #[tokio::test]
     async fn test_cancelled_task_not_forwarded_to_timeout_rx() {
         let timer = TimerWheel::with_defaults();
-        let mut service = timer.create_service();
+        let mut service = timer.create_service(ServiceConfig::default());
 
         // 注册两个任务：一个会被取消，一个会正常到期
         let task1 = TimerService::create_task(Duration::from_secs(10), None);
@@ -1332,7 +1332,7 @@ mod tests {
     #[tokio::test]
     async fn test_take_receiver_twice() {
         let timer = TimerWheel::with_defaults();
-        let mut service = timer.create_service();
+        let mut service = timer.create_service(ServiceConfig::default());
 
         // 第一次调用应该返回 Some
         let rx1 = service.take_receiver();
@@ -1346,7 +1346,7 @@ mod tests {
     #[tokio::test]
     async fn test_postpone_batch_without_callbacks() {
         let timer = TimerWheel::with_defaults();
-        let mut service = timer.create_service();
+        let mut service = timer.create_service(ServiceConfig::default());
         let counter = Arc::new(AtomicU32::new(0));
 
         // 注册 3 个任务，有原始回调

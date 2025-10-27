@@ -580,10 +580,10 @@ println!("定时器到期");
 #### 创建和使用 TimerService
 
 ```rust
-use kestrel_protocol_timer::{TimerWheel, TimerService, CallbackWrapper};
+use kestrel_protocol_timer::{TimerWheel, TimerService, CallbackWrapper, ServiceConfig};
 
 let timer = TimerWheel::with_defaults();
-let mut service = timer.create_service();
+let mut service = timer.create_service(ServiceConfig::default());
 
 // 两步式 API：创建任务 + 注册
 let callback = Some(CallbackWrapper::new(|| async {
@@ -599,10 +599,10 @@ println!("已调度任务 ID: {:?}", task_id);
 #### 批量调度并接收超时通知
 
 ```rust
-use kestrel_protocol_timer::CallbackWrapper;
+use kestrel_protocol_timer::{CallbackWrapper, ServiceConfig};
 
 let timer = TimerWheel::with_defaults();
-let mut service = timer.create_service();
+let mut service = timer.create_service(ServiceConfig::default());
 
 // 批量调度定时器：创建 + 注册
 let callbacks: Vec<_> = (0..100)
@@ -635,10 +635,10 @@ service.shutdown().await;
 #### 动态取消任务
 
 ```rust
-use kestrel_protocol_timer::CallbackWrapper;
+use kestrel_protocol_timer::{CallbackWrapper, ServiceConfig};
 
 let timer = TimerWheel::with_defaults();
-let service = timer.create_service();
+let service = timer.create_service(ServiceConfig);
 
 // 通过 service 直接调度定时器
 let callback1 = Some(CallbackWrapper::new(|| async { 
@@ -668,10 +668,10 @@ println!("批量取消了 {} 个任务", cancelled_count);
 #### 动态推迟任务
 
 ```rust
-use kestrel_protocol_timer::CallbackWrapper;
+use kestrel_protocol_timer::{CallbackWrapper, ServiceConfig};
 
 let timer = TimerWheel::with_defaults();
-let service = timer.create_service();
+let service = timer.create_service(ServiceConfig::default());
 let counter = Arc::new(AtomicU32::new(0));
 let counter_clone = Arc::clone(&counter);
 
@@ -896,12 +896,13 @@ let postponed = timer.postpone_batch_with_callbacks(updates);
 
 #### 服务方法
 
-**`create_service(&self) -> TimerService`**
+**`create_service(&self, server_config: ServiceConfig) -> TimerService`**
 
 创建一个 TimerService 实例，用于集中管理定时器。
 
 ```rust
-let service = timer.create_service();
+use kestrel_protocol_timer::ServiceConfig;
+let service = timer.create_service(ServiceConfig::default());
 ```
 
 ### TimerHandle
@@ -1382,14 +1383,14 @@ timer.register(task);
 ### 3. 心跳检测
 
 ```rust
-use kestrel_protocol_timer::CallbackWrapper;
+use kestrel_protocol_timer::{CallbackWrapper, ServiceConfig};
 
 let config = WheelConfig::builder()
     .tick_duration(Duration::from_secs(1))
     .slot_count(512)
     .build()?;
 let timer = TimerWheel::new(config);
-let mut service = timer.create_service();
+let mut service = timer.create_service(ServiceConfig::default());
 
 // 为每个客户端设置心跳检测
 for client_id in client_ids {

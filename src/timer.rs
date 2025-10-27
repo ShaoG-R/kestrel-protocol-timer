@@ -1,4 +1,4 @@
-use crate::config::{ServiceConfig, WheelConfig};
+use crate::config::{BatchConfig, ServiceConfig, WheelConfig};
 use crate::task::{CallbackWrapper, TaskId, TaskCompletionReason};
 use crate::wheel::Wheel;
 use parking_lot::Mutex;
@@ -325,7 +325,7 @@ impl TimerWheel {
     ///
     /// # 示例
     /// ```no_run
-    /// use kestrel_protocol_timer::{TimerWheel, WheelConfig, TimerTask};
+    /// use kestrel_protocol_timer::{TimerWheel, WheelConfig, TimerTask, BatchConfig};
     /// use std::time::Duration;
     ///
     /// #[tokio::main]
@@ -335,16 +335,16 @@ impl TimerWheel {
     ///         .slot_count(512)
     ///         .build()
     ///         .unwrap();
-    ///     let timer = TimerWheel::new(config);
+    ///     let timer = TimerWheel::new(config, BatchConfig::default());
     ///     
     ///     // 使用两步式 API
     ///     let task = TimerWheel::create_task(Duration::from_secs(1), None);
     ///     let handle = timer.register(task);
     /// }
     /// ```
-    pub fn new(config: WheelConfig) -> Self {
+    pub fn new(config: WheelConfig, batch_config: BatchConfig) -> Self {
         let tick_duration = config.tick_duration;
-        let wheel = Wheel::new(config);
+        let wheel = Wheel::new(config, batch_config);
         let wheel = Arc::new(Mutex::new(wheel));
         let wheel_clone = wheel.clone();
 
@@ -373,7 +373,7 @@ impl TimerWheel {
     /// }
     /// ```
     pub fn with_defaults() -> Self {
-        Self::new(WheelConfig::default())
+        Self::new(WheelConfig::default(), BatchConfig::default())
     }
 
     /// 创建与此时间轮绑定的 TimerService（使用默认配置）
@@ -381,16 +381,19 @@ impl TimerWheel {
     /// # 返回
     /// 绑定到此时间轮的 TimerService 实例
     ///
+    /// # 参数
+    /// - `service_config`: 服务配置
+    ///
     /// # 示例
     /// ```no_run
-    /// use kestrel_protocol_timer::{TimerWheel, TimerService, CallbackWrapper};
+    /// use kestrel_protocol_timer::{TimerWheel, TimerService, CallbackWrapper, ServiceConfig};
     /// use std::time::Duration;
     /// 
     ///
     /// #[tokio::main]
     /// async fn main() {
     ///     let timer = TimerWheel::with_defaults();
-    ///     let mut service = timer.create_service();
+    ///     let mut service = timer.create_service(ServiceConfig::default());
     ///     
     ///     // 使用两步式 API 通过 service 批量调度定时器
     ///     let callbacks: Vec<(Duration, Option<CallbackWrapper>)> = (0..5)
@@ -406,8 +409,8 @@ impl TimerWheel {
     ///     }
     /// }
     /// ```
-    pub fn create_service(&self) -> crate::service::TimerService {
-        crate::service::TimerService::new(self.wheel.clone(), ServiceConfig::default())
+    pub fn create_service(&self, service_config: ServiceConfig) -> crate::service::TimerService {
+        crate::service::TimerService::new(self.wheel.clone(), service_config)
     }
     
     /// 创建与此时间轮绑定的 TimerService（使用自定义配置）
