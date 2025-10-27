@@ -60,15 +60,15 @@ fn bench_schedule_batch(c: &mut Criterion) {
                     let timer = TimerWheel::with_defaults();
                     let service = timer.create_service();
                     
-                    let callbacks: Vec<_> = (0..size)
-                        .map(|_| (Duration::from_secs(10), None))
+                    let delays: Vec<_> = (0..size)
+                        .map(|_| Duration::from_secs(10))
                         .collect();
                     
                     // 测量阶段：只测量 create_batch + register_batch 的性能
                     let start = std::time::Instant::now();
                     
                     let tasks = black_box(
-                        kestrel_protocol_timer::TimerService::create_batch(callbacks)
+                        kestrel_protocol_timer::TimerService::create_batch(delays)
                     );
                     let task_ids: Vec<_> = tasks.iter().map(|t| t.get_id()).collect();
                     service.register_batch(tasks).unwrap();
@@ -141,10 +141,10 @@ fn bench_cancel_batch(c: &mut Criterion) {
                     let timer = TimerWheel::with_defaults();
                     let service = timer.create_service();
                     
-                    let callbacks: Vec<_> = (0..size)
-                        .map(|_| (Duration::from_secs(10), None))
+                    let delays: Vec<_> = (0..size)
+                        .map(|_| Duration::from_secs(10))
                         .collect();
-                    let tasks = kestrel_protocol_timer::TimerService::create_batch(callbacks);
+                    let tasks = kestrel_protocol_timer::TimerService::create_batch(delays);
                     let task_ids: Vec<_> = tasks.iter().map(|t| t.get_id()).collect();
                     service.register_batch(tasks).unwrap();
                     
@@ -191,10 +191,10 @@ fn bench_concurrent_schedule(c: &mut Criterion) {
                     for _ in 0..concurrent_ops {
                         let service_clone = Arc::clone(&service);
                         let fut = async move {
-                            let callbacks: Vec<_> = (0..10)
-                                .map(|_| (Duration::from_secs(10), None))
+                            let delays: Vec<_> = (0..10)
+                                .map(|_| Duration::from_secs(10))
                                 .collect();
-                            let tasks = kestrel_protocol_timer::TimerService::create_batch(callbacks);
+                            let tasks = kestrel_protocol_timer::TimerService::create_batch(delays);
                             service_clone.register_batch(tasks).unwrap();
                         };
                         handles.push(fut);
@@ -230,10 +230,10 @@ fn bench_high_frequency_cancel(c: &mut Criterion) {
                 let timer = TimerWheel::with_defaults();
                 let service = timer.create_service();
                 
-                let callbacks: Vec<_> = (0..1000)
-                    .map(|_| (Duration::from_secs(10), None))
+                let delays: Vec<_> = (0..1000)
+                    .map(|_| Duration::from_secs(10))
                     .collect();
-                let tasks = kestrel_protocol_timer::TimerService::create_batch(callbacks);
+                let tasks = kestrel_protocol_timer::TimerService::create_batch(delays);
                 let task_ids: Vec<_> = tasks.iter().map(|t| t.get_id()).collect();
                 service.register_batch(tasks).unwrap();
                 
@@ -276,10 +276,10 @@ fn bench_mixed_operations(c: &mut Criterion) {
                 // 交替执行调度和取消操作
                 for _ in 0..50 {
                     // 调度10个任务
-                    let callbacks: Vec<_> = (0..10)
-                        .map(|_| (Duration::from_secs(10), None))
+                    let delays: Vec<_> = (0..10)
+                        .map(|_| Duration::from_secs(10))
                         .collect();
-                    let tasks = kestrel_protocol_timer::TimerService::create_batch(callbacks);
+                    let tasks = kestrel_protocol_timer::TimerService::create_batch(delays);
                     let task_ids: Vec<_> = tasks.iter().map(|t| t.get_id()).collect();
                     service.register_batch(tasks).unwrap();
                     
@@ -470,10 +470,10 @@ fn bench_postpone_batch(c: &mut Criterion) {
                     let timer = TimerWheel::with_defaults();
                     let service = timer.create_service();
                     
-                    let callbacks: Vec<_> = (0..size)
-                        .map(|_| (Duration::from_millis(100), None))
+                    let delays: Vec<_> = (0..size)
+                        .map(|_| Duration::from_millis(100))
                         .collect();
-                    let tasks = kestrel_protocol_timer::TimerService::create_batch(callbacks);
+                    let tasks = kestrel_protocol_timer::TimerService::create_batch(delays);
                     let task_ids: Vec<_> = tasks.iter().map(|t| t.get_id()).collect();
                     service.register_batch(tasks).unwrap();
                     
@@ -570,10 +570,10 @@ fn bench_postpone_batch_with_callbacks(c: &mut Criterion) {
                     let service = timer.create_service();
                     let counter = Arc::new(AtomicU32::new(0));
                     
-                    let callbacks: Vec<_> = (0..size)
-                        .map(|_| (Duration::from_millis(100), None))
+                    let delays: Vec<_> = (0..size)
+                        .map(|_| Duration::from_millis(100))
                         .collect();
-                    let tasks = kestrel_protocol_timer::TimerService::create_batch(callbacks);
+                    let tasks = kestrel_protocol_timer::TimerService::create_batch(delays);
                     let task_ids: Vec<_> = tasks.iter().map(|t| t.get_id()).collect();
                     service.register_batch(tasks).unwrap();
                     
@@ -631,10 +631,10 @@ fn bench_mixed_operations_with_postpone(c: &mut Criterion) {
                 // 交替执行调度、推迟和取消操作
                 for _ in 0..30 {
                     // 调度15个任务
-                    let callbacks: Vec<_> = (0..15)
-                        .map(|_| (Duration::from_secs(10), None))
+                    let delays: Vec<_> = (0..15)
+                        .map(|_| Duration::from_secs(10))
                         .collect();
-                    let tasks = kestrel_protocol_timer::TimerService::create_batch(callbacks);
+                    let tasks = kestrel_protocol_timer::TimerService::create_batch(delays);
                     let task_ids: Vec<_> = tasks.iter().map(|t| t.get_id()).collect();
                     service.register_batch(tasks).unwrap();
                     

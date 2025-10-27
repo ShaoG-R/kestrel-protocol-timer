@@ -133,10 +133,10 @@ impl BatchHandle {
     /// # #[tokio::main]
     /// # async fn main() {
     /// let timer = TimerWheel::with_defaults();
-    /// let callbacks: Vec<(Duration, Option<CallbackWrapper>)> = (0..10)
-    ///     .map(|_| (Duration::from_secs(1), Some(CallbackWrapper::new(|| async {}))))
+    /// let delays: Vec<Duration> = (0..10)
+    ///     .map(|_| Duration::from_secs(1))
     ///     .collect();
-    /// let tasks = TimerWheel::create_batch(callbacks);
+    /// let tasks = TimerWheel::create_batch(delays);
     /// let batch = timer.register_batch(tasks);
     /// 
     /// let cancelled = batch.cancel_all();
@@ -160,10 +160,10 @@ impl BatchHandle {
     /// # #[tokio::main]
     /// # async fn main() {
     /// let timer = TimerWheel::with_defaults();
-    /// let callbacks: Vec<(Duration, Option<CallbackWrapper>)> = (0..3)
-    ///     .map(|_| (Duration::from_secs(1), Some(CallbackWrapper::new(|| async {}))))
+    /// let delays: Vec<Duration> = (0..3)
+    ///     .map(|_| Duration::from_secs(1))
     ///     .collect();
-    /// let tasks = TimerWheel::create_batch(callbacks);
+    /// let tasks = TimerWheel::create_batch(delays);
     /// let batch = timer.register_batch(tasks);
     /// 
     /// // 转换为独立的句柄
@@ -219,10 +219,10 @@ impl BatchHandle {
     /// # #[tokio::main]
     /// # async fn main() {
     /// let timer = TimerWheel::with_defaults();
-    /// let callbacks: Vec<(Duration, Option<CallbackWrapper>)> = (0..3)
-    ///     .map(|_| (Duration::from_secs(1), Some(CallbackWrapper::new(|| async {}))))
+    /// let delays: Vec<Duration> = (0..3)
+    ///     .map(|_| Duration::from_secs(1))
     ///     .collect();
-    /// let tasks = TimerWheel::create_batch(callbacks);
+    /// let tasks = TimerWheel::create_batch(delays);
     /// let batch = timer.register_batch(tasks);
     /// 
     /// // 获取所有完成通知接收器
@@ -251,10 +251,10 @@ impl BatchHandle {
 /// # #[tokio::main]
 /// # async fn main() {
 /// let timer = TimerWheel::with_defaults();
-/// let callbacks: Vec<(Duration, Option<CallbackWrapper>)> = (0..3)
-///     .map(|_| (Duration::from_secs(1), Some(CallbackWrapper::new(|| async {}))))
+/// let delays: Vec<Duration> = (0..3)
+///     .map(|_| Duration::from_secs(1))
 ///     .collect();
-/// let tasks = TimerWheel::create_batch(callbacks);
+/// let tasks = TimerWheel::create_batch(delays);
 /// let batch = timer.register_batch(tasks);
 /// 
 /// // 直接迭代，每个元素都是独立的 TimerHandle
@@ -396,7 +396,7 @@ impl TimerWheel {
     ///     let callbacks: Vec<(Duration, Option<CallbackWrapper>)> = (0..5)
     ///         .map(|_| (Duration::from_millis(100), Some(CallbackWrapper::new(|| async {}))))
     ///         .collect();
-    ///     let tasks = TimerService::create_batch(callbacks);
+    ///     let tasks = TimerService::create_batch_with_callbacks(callbacks);
     ///     service.register_batch(tasks).unwrap();
     ///     
     ///     // 接收超时通知
@@ -495,10 +495,54 @@ impl TimerWheel {
     ///     let counter = Arc::new(AtomicU32::new(0));
     ///     
     ///     // 步骤 1: 批量创建任务
-    ///     let callbacks: Vec<(Duration, Option<CallbackWrapper>)> = (0..3)
-    ///         .map(|i| {
+    ///     let delays: Vec<Duration> = (0..3)
+    ///         .map(|_| Duration::from_millis(100))
+    ///         .collect();
+    ///     
+    ///     let tasks = TimerWheel::create_batch(delays);
+    ///     println!("Created {} tasks", tasks.len());
+    ///     
+    ///     // 步骤 2: 批量注册任务
+    ///     let batch = timer.register_batch(tasks);
+    /// }
+    /// ```
+    #[inline]
+    pub fn create_batch(delays: Vec<Duration>) -> Vec<crate::task::TimerTask>
+    {
+        delays
+            .into_iter()
+            .map(|delay| crate::task::TimerTask::new(delay, None))
+            .collect()
+    }
+
+    /// 批量创建定时器任务（申请阶段）
+    /// 
+    /// # 参数
+    /// - `callbacks`: (延迟时间, 回调) 的元组列表
+    /// 
+    /// # 返回
+    /// 返回 TimerTask 列表，需要通过 `register_batch()` 注册到时间轮
+    /// 
+    /// # 示例
+    /// ```no_run
+    /// use kestrel_protocol_timer::{TimerWheel, TimerTask, CallbackWrapper};
+    /// use std::time::Duration;
+    /// use std::sync::Arc;
+    /// use std::sync::atomic::{AtomicU32, Ordering};
+    /// 
+    /// #[tokio::main]
+    /// async fn main() {
+    ///     let timer = TimerWheel::with_defaults();
+    ///     let counter = Arc::new(AtomicU32::new(0));
+    ///     
+    ///     // 步骤 1: 批量创建任务
+    ///     let delays: Vec<Duration> = (0..3)
+    ///         .map(|_| Duration::from_millis(100))
+    ///         .collect();
+    ///     let callbacks: Vec<(Duration, Option<CallbackWrapper>)> = delays
+    ///         .into_iter()
+    ///         .map(|delay| {
     ///             let counter = Arc::clone(&counter);
-    ///             let delay = Duration::from_millis(100 + i * 100);
     ///             let callback = Some(CallbackWrapper::new(move || {
     ///                 let counter = Arc::clone(&counter);
     ///                 async move {
@@ -509,7 +553,7 @@ impl TimerWheel {
     ///         })
     ///         .collect();
     ///     
-    ///     let tasks = TimerWheel::create_batch(callbacks);
+    ///     let tasks = TimerWheel::create_batch_with_callbacks(callbacks);
     ///     println!("Created {} tasks", tasks.len());
     ///     
     ///     // 步骤 2: 批量注册任务
@@ -517,7 +561,7 @@ impl TimerWheel {
     /// }
     /// ```
     #[inline]
-    pub fn create_batch(callbacks: Vec<(Duration, Option<CallbackWrapper>)>) -> Vec<crate::task::TimerTask>
+    pub fn create_batch_with_callbacks(callbacks: Vec<(Duration, Option<CallbackWrapper>)>) -> Vec<crate::task::TimerTask>
     {
         callbacks
             .into_iter()
@@ -559,13 +603,12 @@ impl TimerWheel {
         let (completion_tx, completion_rx) = oneshot::channel();
         let notifier = crate::task::CompletionNotifier(completion_tx);
         
-        let delay = task.delay;
         let task_id = task.id;
         
         // 单次加锁完成所有操作
         {
             let mut wheel_guard = self.wheel.lock();
-            wheel_guard.insert(delay, task, notifier);
+            wheel_guard.insert(task, notifier);
         }
         
         TimerHandle::new(task_id, self.wheel.clone(), completion_rx)
@@ -588,10 +631,10 @@ impl TimerWheel {
     /// async fn main() {
     ///     let timer = TimerWheel::with_defaults();
     ///     
-    ///     let callbacks: Vec<_> = (0..3)
-    ///         .map(|_| (Duration::from_secs(1), None))
+    ///     let delays: Vec<Duration> = (0..3)
+    ///         .map(|_| Duration::from_secs(1))
     ///         .collect();
-    ///     let tasks = TimerWheel::create_batch(callbacks);
+    ///     let tasks = TimerWheel::create_batch(delays);
     ///     
     ///     let batch = timer.register_batch(tasks);
     ///     println!("Registered {} timers", batch.len());
@@ -612,7 +655,7 @@ impl TimerWheel {
             
             task_ids.push(task.id);
             completion_rxs.push(completion_rx);
-            prepared_tasks.push((task.delay, task, notifier));
+            prepared_tasks.push((task, notifier));
         }
         
         // 步骤2: 单次加锁，批量插入
@@ -820,14 +863,14 @@ impl TimerWheel {
     ///     timer.register(task3);
     ///     
     ///     // 批量推迟（保持原回调）
-    ///     let postponed = timer.postpone_batch(&task_ids);
+    ///     let postponed = timer.postpone_batch(task_ids);
     ///     println!("已推迟 {} 个定时器", postponed);
     /// }
     /// ```
     #[inline]
-    pub fn postpone_batch(&self, updates: &[(TaskId, Duration)]) -> usize {
+    pub fn postpone_batch(&self, updates: Vec<(TaskId, Duration)>) -> usize {
         let mut wheel = self.wheel.lock();
-        wheel.postpone_batch(updates.to_vec())
+        wheel.postpone_batch(updates)
     }
 
     /// 批量推迟定时器（替换回调）
@@ -1158,7 +1201,7 @@ mod tests {
         }
 
         // 批量推迟
-        let postponed = timer.postpone_batch(&task_ids);
+        let postponed = timer.postpone_batch(task_ids);
         assert_eq!(postponed, 3);
 
         // 等待原定时间 50ms，任务不应该触发

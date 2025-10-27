@@ -233,7 +233,7 @@ async fn test_batch_schedule() {
         .collect();
     
     // 批量调度
-    let tasks = TimerWheel::create_batch(callbacks);
+    let tasks = TimerWheel::create_batch_with_callbacks(callbacks);
     let batch = timer.register_batch(tasks);
     
     println!("批量调度 {} 个定时器耗时: {:?}", BATCH_SIZE, start.elapsed());
@@ -254,11 +254,11 @@ async fn test_batch_cancel() {
     const TIMER_COUNT: usize = 500;
     
     // 批量创建定时器
-    let callbacks: Vec<(Duration, Option<_>)> = (0..TIMER_COUNT)
-        .map(|_| (Duration::from_secs(10), None))
+    let delays: Vec<Duration> = (0..TIMER_COUNT)
+        .map(|_| Duration::from_secs(10))
         .collect();
     
-    let tasks = TimerWheel::create_batch(callbacks);
+    let tasks = TimerWheel::create_batch(delays);
     let batch = timer.register_batch(tasks);
     assert_eq!(batch.len(), TIMER_COUNT);
     
@@ -277,11 +277,11 @@ async fn test_batch_cancel_partial() {
     let timer = TimerWheel::with_defaults();
     
     // 创建 10 个定时器
-    let callbacks: Vec<(Duration, _)> = (0..10)
-        .map(|_| (Duration::from_millis(100), Some(CallbackWrapper::new(|| async {}))))
+    let delays: Vec<Duration> = (0..10)
+        .map(|_| Duration::from_millis(100))
         .collect();
     
-    let tasks = TimerWheel::create_batch(callbacks);
+    let tasks = TimerWheel::create_batch(delays);
     let batch = timer.register_batch(tasks);
     
     // 转换为独立的句柄
@@ -319,11 +319,11 @@ async fn test_batch_cancel_no_wait() {
     let timer = TimerWheel::with_defaults();
     
     // 批量创建定时器
-    let callbacks: Vec<(Duration, _)> = (0..100)
-        .map(|_| (Duration::from_secs(10), Some(CallbackWrapper::new(|| async {}))))
+    let delays: Vec<Duration> = (0..100)
+        .map(|_| Duration::from_secs(10))
         .collect();
     
-    let tasks = TimerWheel::create_batch(callbacks);
+    let tasks = TimerWheel::create_batch(delays);
     let batch = timer.register_batch(tasks);
     
     // 批量取消（使用 BatchHandle 的 cancel_all 方法，现在是同步的）
@@ -445,7 +445,7 @@ async fn test_batch_postpone() {
     }
 
     let start = Instant::now();
-    let postponed = timer.postpone_batch(&task_ids);
+    let postponed = timer.postpone_batch(task_ids);
     let elapsed = start.elapsed();
     
     println!("批量推迟 {} 个定时器耗时: {:?}", BATCH_SIZE, elapsed);

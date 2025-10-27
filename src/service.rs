@@ -1,7 +1,6 @@
 use crate::config::ServiceConfig;
 use crate::error::TimerError;
 use crate::task::{CallbackWrapper, TaskCompletionReason, TaskId};
-use crate::timer::{BatchHandle, TimerHandle};
 use crate::wheel::Wheel;
 use futures::stream::{FuturesUnordered, StreamExt};
 use futures::future::BoxFuture;
@@ -13,10 +12,16 @@ use tokio::task::JoinHandle;
 
 /// TimerService 命令类型
 enum ServiceCommand {
-    /// 添加批量定时器句柄
-    AddBatchHandle(BatchHandle),
-    /// 添加单个定时器句柄
-    AddTimerHandle(TimerHandle),
+    /// 添加批量定时器句柄（仅包含必要数据：task_ids 和 completion_rxs）
+    AddBatchHandle {
+        task_ids: Vec<TaskId>,
+        completion_rxs: Vec<tokio::sync::oneshot::Receiver<TaskCompletionReason>>,
+    },
+    /// 添加单个定时器句柄（仅包含必要数据：task_id 和 completion_rx）
+    AddTimerHandle {
+        task_id: TaskId,
+        completion_rx: tokio::sync::oneshot::Receiver<TaskCompletionReason>,
+    },
     /// 关闭 Service
     Shutdown,
 }
@@ -50,7 +55,7 @@ enum ServiceCommand {
 ///             (Duration::from_millis(100), callback)
 ///         })
 ///         .collect();
-///     let tasks = TimerService::create_batch(callbacks);
+///     let tasks = TimerService::create_batch_with_callbacks(callbacks);
 ///     service.register_batch(tasks).unwrap();
 ///     
 ///     // 接收超时通知
@@ -206,7 +211,7 @@ impl TimerService {
     ///         (Duration::from_secs(10), callback)
     ///     })
     ///     .collect();
-    /// let tasks = TimerService::create_batch(callbacks);
+    /// let tasks = TimerService::create_batch_with_callbacks(callbacks);
     /// let task_ids: Vec<_> = tasks.iter().map(|t| t.get_id()).collect();
     /// service.register_batch(tasks).unwrap();
     /// 
@@ -302,7 +307,7 @@ impl TimerService {
     ///         (Duration::from_secs(5), callback)
     ///     })
     ///     .collect();
-    /// let tasks = TimerService::create_batch(callbacks);
+    /// let tasks = TimerService::create_batch_with_callbacks(callbacks);
     /// let task_ids: Vec<_> = tasks.iter().map(|t| t.get_id()).collect();
     /// service.register_batch(tasks).unwrap();
     /// 
@@ -344,10 +349,10 @@ impl TimerService {
     /// let service = timer.create_service();
     /// 
     /// // 创建 3 个任务，初始没有回调
-    /// let callbacks: Vec<(Duration, Option<CallbackWrapper>)> = (0..3)
-    ///     .map(|_| (Duration::from_secs(5), None))
+    /// let delays: Vec<Duration> = (0..3)
+    ///     .map(|_| Duration::from_secs(5))
     ///     .collect();
-    /// let tasks = TimerService::create_batch(callbacks);
+    /// let tasks = TimerService::create_batch(delays);
     /// let task_ids: Vec<_> = tasks.iter().map(|t| t.get_id()).collect();
     /// service.register_batch(tasks).unwrap();
     /// 
@@ -415,8 +420,43 @@ impl TimerService {
     pub fn create_task(delay: Duration, callback: Option<CallbackWrapper>) -> crate::task::TimerTask {
         crate::timer::TimerWheel::create_task(delay, callback)
     }
+
+    /// 批量创建定时器任务（静态方法，申请阶段，不带回调）
+    /// 
+    /// # 参数
+    /// - `delays`: 延迟时间列表
+    /// 
+    /// # 返回
+    /// 返回 TimerTask 列表，需要通过 `register_batch()` 注册
+    /// 
+    /// # 示例
+    /// ```no_run
+    /// # use kestrel_protocol_timer::{TimerWheel, TimerService, CallbackWrapper};
+    /// # use std::time::Duration;
+    /// # 
+    /// # #[tokio::main]
+    /// # async fn main() {
+    /// let timer = TimerWheel::with_defaults();
+    /// let service = timer.create_service();
+    /// 
+    /// // 步骤 1: 批量创建任务
+    /// let delays: Vec<Duration> = (0..3)
+    ///     .map(|i| Duration::from_millis(100 * (i + 1)))
+    ///     .collect();
+    /// 
+    /// let tasks = TimerService::create_batch(delays);
+    /// println!("Created {} tasks", tasks.len());
+    /// 
+    /// // 步骤 2: 批量注册任务
+    /// service.register_batch(tasks).unwrap();
+    /// # }
+    /// ```
+    #[inline]
+    pub fn create_batch(delays: Vec<Duration>) -> Vec<crate::task::TimerTask> {
+        crate::timer::TimerWheel::create_batch(delays)
+    }
     
-    /// 批量创建定时器任务（静态方法，申请阶段）
+    /// 批量创建定时器任务（静态方法，申请阶段，带回调）
     /// 
     /// # 参数
     /// - `callbacks`: (延迟时间, 回调) 的元组列表
@@ -444,7 +484,7 @@ impl TimerService {
     ///     })
     ///     .collect();
     /// 
-    /// let tasks = TimerService::create_batch(callbacks);
+    /// let tasks = TimerService::create_batch_with_callbacks(callbacks);
     /// println!("Created {} tasks", tasks.len());
     /// 
     /// // 步骤 2: 批量注册任务
@@ -452,9 +492,9 @@ impl TimerService {
     /// # }
     /// ```
     #[inline]
-    pub fn create_batch(callbacks: Vec<(Duration, Option<CallbackWrapper>)>) -> Vec<crate::task::TimerTask> {
-        crate::timer::TimerWheel::create_batch(callbacks)
-    }   
+    pub fn create_batch_with_callbacks(callbacks: Vec<(Duration, Option<CallbackWrapper>)>) -> Vec<crate::task::TimerTask> {
+        crate::timer::TimerWheel::create_batch_with_callbacks(callbacks)
+    }
     
     /// 注册定时器任务到服务（注册阶段）
     /// 
@@ -489,19 +529,20 @@ impl TimerService {
         let (completion_tx, completion_rx) = tokio::sync::oneshot::channel();
         let notifier = crate::task::CompletionNotifier(completion_tx);
         
-        let delay = task.delay;
         let task_id = task.id;
         
         // 单次加锁完成所有操作
         {
             let mut wheel_guard = self.wheel.lock();
-            wheel_guard.insert(delay, task, notifier);
+            wheel_guard.insert(task, notifier);
         }
         
-        // 创建句柄并添加到服务管理
-        let handle = TimerHandle::new(task_id, self.wheel.clone(), completion_rx);
+        // 添加到服务管理（只发送必要数据）
         self.command_tx
-            .try_send(ServiceCommand::AddTimerHandle(handle))
+            .try_send(ServiceCommand::AddTimerHandle {
+                task_id,
+                completion_rx,
+            })
             .map_err(|_| TimerError::RegisterFailed)?;
         
         Ok(())
@@ -534,7 +575,7 @@ impl TimerService {
     ///         (Duration::from_secs(1), callback)
     ///     })
     ///     .collect();
-    /// let tasks = TimerService::create_batch(callbacks);
+    /// let tasks = TimerService::create_batch_with_callbacks(callbacks);
     /// 
     /// service.register_batch(tasks).unwrap();
     /// # }
@@ -554,7 +595,7 @@ impl TimerService {
             
             task_ids.push(task.id);
             completion_rxs.push(completion_rx);
-            prepared_tasks.push((task.delay, task, notifier));
+            prepared_tasks.push((task, notifier));
         }
         
         // 步骤2: 单次加锁，批量插入
@@ -563,10 +604,12 @@ impl TimerService {
             wheel_guard.insert_batch(prepared_tasks);
         }
         
-        // 创建批量句柄并添加到服务管理
-        let batch_handle = BatchHandle::new(task_ids, self.wheel.clone(), completion_rxs);
+        // 添加到服务管理（只发送必要数据）
         self.command_tx
-            .try_send(ServiceCommand::AddBatchHandle(batch_handle))
+            .try_send(ServiceCommand::AddBatchHandle {
+                task_ids,
+                completion_rxs,
+            })
             .map_err(|_| TimerError::RegisterFailed)?;
         
         Ok(())
@@ -639,13 +682,7 @@ impl ServiceActor {
                 // 监听命令
                 Some(cmd) = self.command_rx.recv() => {
                     match cmd {
-                        ServiceCommand::AddBatchHandle(batch) => {
-                            let BatchHandle {
-                                task_ids,
-                                completion_rxs,
-                                ..
-                            } = batch;
-                            
+                        ServiceCommand::AddBatchHandle { task_ids, completion_rxs } => {
                             // 将所有任务添加到 futures 中
                             for (task_id, rx) in task_ids.into_iter().zip(completion_rxs.into_iter()) {
                                 let future: BoxFuture<'static, (TaskId, Result<TaskCompletionReason, tokio::sync::oneshot::error::RecvError>)> = Box::pin(async move {
@@ -654,16 +691,11 @@ impl ServiceActor {
                                 futures.push(future);
                             }
                         }
-                        ServiceCommand::AddTimerHandle(handle) => {
-                            let TimerHandle{
-                                task_id,
-                                completion_rx,
-                                ..
-                            } = handle;
+                        ServiceCommand::AddTimerHandle { task_id, completion_rx } => {
                             
                             // 添加到 futures 中
                             let future: BoxFuture<'static, (TaskId, Result<TaskCompletionReason, tokio::sync::oneshot::error::RecvError>)> = Box::pin(async move {
-                                (task_id, completion_rx.0.await)
+                                (task_id, completion_rx.await)
                             });
                             futures.push(future);
                         }
@@ -890,7 +922,7 @@ mod tests {
             })
             .collect();
 
-        let tasks = TimerService::create_batch(callbacks);
+        let tasks = TimerService::create_batch_with_callbacks(callbacks);
         assert_eq!(tasks.len(), 3);
         service.register_batch(tasks).unwrap();
 
@@ -983,7 +1015,7 @@ mod tests {
             })
             .collect();
 
-        let tasks = TimerService::create_batch(callbacks);
+        let tasks = TimerService::create_batch_with_callbacks(callbacks);
         let task_ids: Vec<_> = tasks.iter().map(|t| t.get_id()).collect();
         assert_eq!(task_ids.len(), 10);
         service.register_batch(tasks).unwrap();
@@ -1016,7 +1048,7 @@ mod tests {
             })
             .collect();
 
-        let tasks = TimerService::create_batch(callbacks);
+        let tasks = TimerService::create_batch_with_callbacks(callbacks);
         let task_ids: Vec<_> = tasks.iter().map(|t| t.get_id()).collect();
         service.register_batch(tasks).unwrap();
 

@@ -113,8 +113,8 @@ impl Wheel {
     /// - 使用位运算优化槽位索引计算
     /// - 维护任务索引以支持 O(1) 查找和取消
     #[inline]
-    pub fn insert(&mut self, delay: Duration, mut task: TimerTask, notifier: crate::task::CompletionNotifier) -> TaskId {
-        let ticks = self.delay_to_ticks(delay);
+    pub fn insert(&mut self, mut task: TimerTask, notifier: crate::task::CompletionNotifier) -> TaskId {
+        let ticks = self.delay_to_ticks(task.delay);
         let total_ticks = self.current_tick + ticks;
         
         // 计算槽位索引和轮次
@@ -154,7 +154,7 @@ impl Wheel {
     /// - 减少重复的边界检查和容量调整
     /// - 对于相同延迟的任务，可以复用计算结果
     #[inline]
-    pub fn insert_batch(&mut self, tasks: Vec<(Duration, TimerTask, crate::task::CompletionNotifier)>) -> Vec<TaskId> {
+    pub fn insert_batch(&mut self, tasks: Vec<(TimerTask, crate::task::CompletionNotifier)>) -> Vec<TaskId> {
         let task_count = tasks.len();
         
         // 优化：预先分配 HashMap 容量，避免重新分配
@@ -162,8 +162,8 @@ impl Wheel {
         
         let mut task_ids = Vec::with_capacity(task_count);
         
-        for (delay, mut task, notifier) in tasks {
-            let ticks = self.delay_to_ticks(delay);
+        for (mut task, notifier) in tasks {
+            let ticks = self.delay_to_ticks(task.delay);
             let total_ticks = self.current_tick + ticks;
             
             // 计算槽位索引和轮次
@@ -536,13 +536,13 @@ mod tests {
         let mut wheel = Wheel::new(WheelConfig::default());
         
         // 创建批量任务
-        let tasks: Vec<(Duration, TimerTask, CompletionNotifier)> = (0..10)
+        let tasks: Vec<(TimerTask, CompletionNotifier)> = (0..10)
             .map(|i| {
                 let callback = CallbackWrapper::new(|| async {});
                 let (completion_tx, _completion_rx) = tokio::sync::oneshot::channel();
                 let notifier = CompletionNotifier(completion_tx);
                 let task = TimerTask::new(Duration::from_millis(100 + i * 10), Some(callback));
-                (Duration::from_millis(100 + i * 10), task, notifier)
+                (task, notifier)
             })
             .collect();
         
@@ -565,7 +565,7 @@ mod tests {
             let (completion_tx, _completion_rx) = tokio::sync::oneshot::channel();
             let notifier = CompletionNotifier(completion_tx);
             let task = TimerTask::new(Duration::from_millis(100 + i * 10), Some(callback));
-            let task_id = wheel.insert(Duration::from_millis(100 + i * 10), task, notifier);
+            let task_id = wheel.insert(task, notifier);
             task_ids.push(task_id);
         }
         
@@ -602,7 +602,7 @@ mod tests {
             let (completion_tx, _completion_rx) = tokio::sync::oneshot::channel();
             let notifier = CompletionNotifier(completion_tx);
             let task = TimerTask::new(Duration::from_millis(100), Some(callback));
-            let task_id = wheel.insert(Duration::from_millis(100), task, notifier);
+            let task_id = wheel.insert(task, notifier);
             task_ids.push(task_id);
         }
         
@@ -623,7 +623,7 @@ mod tests {
         let (completion_tx, _completion_rx) = tokio::sync::oneshot::channel();
         let notifier = CompletionNotifier(completion_tx);
         let task = TimerTask::new(Duration::from_millis(100), Some(callback));
-        let task_id = wheel.insert(Duration::from_millis(100), task, notifier);
+        let task_id = wheel.insert(task, notifier);
         
         // 推迟任务到 200ms（保持原回调）
         let postponed = wheel.postpone(task_id, Duration::from_millis(200), None);
@@ -663,7 +663,7 @@ mod tests {
         let (completion_tx, _completion_rx) = tokio::sync::oneshot::channel();
         let notifier = CompletionNotifier(completion_tx);
         let task = TimerTask::new(Duration::from_millis(100), Some(old_callback.clone()));
-        let task_id = wheel.insert(Duration::from_millis(100), task, notifier);
+        let task_id = wheel.insert(task, notifier);
         
         // 推迟任务并替换回调
         let new_callback = CallbackWrapper::new(|| async {});
@@ -708,7 +708,7 @@ mod tests {
             let (completion_tx, _completion_rx) = tokio::sync::oneshot::channel();
             let notifier = CompletionNotifier(completion_tx);
             let task = TimerTask::new(Duration::from_millis(50), Some(callback));
-            let task_id = wheel.insert(Duration::from_millis(50), task, notifier);
+            let task_id = wheel.insert(task, notifier);
             task_ids.push(task_id);
         }
         
@@ -748,7 +748,7 @@ mod tests {
             let (completion_tx, _completion_rx) = tokio::sync::oneshot::channel();
             let notifier = CompletionNotifier(completion_tx);
             let task = TimerTask::new(Duration::from_millis(50), Some(callback));
-            let task_id = wheel.insert(Duration::from_millis(50), task, notifier);
+            let task_id = wheel.insert(task, notifier);
             task_ids.push(task_id);
         }
         
@@ -792,7 +792,7 @@ mod tests {
         let (completion_tx, _completion_rx) = tokio::sync::oneshot::channel();
         let notifier = CompletionNotifier(completion_tx);
         let task = TimerTask::new(Duration::from_millis(6000), Some(callback));
-        let task_id = wheel.insert(Duration::from_millis(6000), task, notifier);
+        let task_id = wheel.insert(task, notifier);
         
         // 6000ms / 10ms = 600 ticks
         // 600 ticks / 512 slots = 1 轮 + 88 ticks
@@ -829,7 +829,7 @@ mod tests {
         let (completion_tx, _completion_rx) = tokio::sync::oneshot::channel();
         let notifier = CompletionNotifier(completion_tx);
         let task = TimerTask::new(Duration::from_millis(1), Some(callback));
-        let task_id = wheel.insert(Duration::from_millis(1), task, notifier);
+        let task_id: TaskId = wheel.insert(task, notifier);
         
         // 推进 1 tick，任务应该触发
         let expired = wheel.advance();
@@ -865,7 +865,7 @@ mod tests {
         let (completion_tx, _completion_rx) = tokio::sync::oneshot::channel();
         let notifier = CompletionNotifier(completion_tx);
         let task = TimerTask::new(Duration::from_millis(100), Some(callback));
-        let task_id = wheel.insert(Duration::from_millis(100), task, notifier);
+        let task_id = wheel.insert(task, notifier);
         
         // 第一次推迟
         let postponed = wheel.postpone(task_id, Duration::from_millis(200), None);
@@ -917,7 +917,7 @@ mod tests {
         let (completion_tx, _completion_rx) = tokio::sync::oneshot::channel();
         let notifier = CompletionNotifier(completion_tx);
         let task = TimerTask::new(Duration::from_millis(100), Some(callback));
-        let task_id = wheel.insert(Duration::from_millis(100), task, notifier);
+        let task_id = wheel.insert(task, notifier);
         
         // 推迟任务
         let postponed = wheel.postpone(task_id, Duration::from_millis(200), None);
@@ -947,13 +947,13 @@ mod tests {
         let callback1 = CallbackWrapper::new(|| async {});
         let (tx1, _rx1) = tokio::sync::oneshot::channel();
         let task1 = TimerTask::new(Duration::from_millis(10), Some(callback1));
-        let task_id_1 = wheel.insert(Duration::from_millis(10), task1, CompletionNotifier(tx1));
+        let task_id_1 = wheel.insert(task1, CompletionNotifier(tx1));
         
         // 第二个任务：延迟 5110ms（511 ticks），应该在 slot 511 触发
         let callback2 = CallbackWrapper::new(|| async {});
         let (tx2, _rx2) = tokio::sync::oneshot::channel();
         let task2 = TimerTask::new(Duration::from_millis(5110), Some(callback2));
-        let task_id_2 = wheel.insert(Duration::from_millis(5110), task2, CompletionNotifier(tx2));
+        let task_id_2 = wheel.insert(task2, CompletionNotifier(tx2));
         
         // 推进 1 tick，第一个任务应该触发
         let expired = wheel.advance();
@@ -992,7 +992,7 @@ mod tests {
             let callback = CallbackWrapper::new(|| async {});
             let (tx, _rx) = tokio::sync::oneshot::channel();
             let task = TimerTask::new(Duration::from_millis(100), Some(callback));
-            let task_id = wheel.insert(Duration::from_millis(100), task, CompletionNotifier(tx));
+            let task_id = wheel.insert(task, CompletionNotifier(tx));
             task_ids.push(task_id);
         }
         
@@ -1019,7 +1019,7 @@ mod tests {
             let callback = CallbackWrapper::new(|| async {});
             let (tx, _rx) = tokio::sync::oneshot::channel();
             let task = TimerTask::new(Duration::from_millis(100), Some(callback));
-            let task_id = wheel.insert(Duration::from_millis(100), task, CompletionNotifier(tx));
+            let task_id = wheel.insert(task, CompletionNotifier(tx));
             
             assert!(task_ids.insert(task_id), "TaskId 应该是唯一的");
         }

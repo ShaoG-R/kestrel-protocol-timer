@@ -216,7 +216,7 @@ mod tests {
             })
             .collect();
 
-        let tasks = TimerWheel::create_batch(callbacks);
+        let tasks = TimerWheel::create_batch_with_callbacks(callbacks);
         let batch = timer.register_batch(tasks);
         let receivers = batch.into_completion_receivers();
 

@@ -163,6 +163,7 @@ impl TimerTask {
     /// 
     /// # 注意
     /// 这是内部方法，用户应该使用 `TimerWheel::create_task()` 或 `TimerService::create_task()` 创建任务。
+    #[inline]
     pub(crate) fn new(delay: std::time::Duration, callback: Option<CallbackWrapper>) -> Self {
         Self {
             id: TaskId::new(),

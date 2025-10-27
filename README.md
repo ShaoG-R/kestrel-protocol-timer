@@ -408,7 +408,7 @@ let callbacks: Vec<_> = (0..100)
     .collect();
 
 // 批量调度：创建任务 + 注册
-let tasks = TimerWheel::create_batch(callbacks);
+let tasks = TimerWheel::create_batch_with_callbacks(callbacks);
 let batch_handle = timer.register_batch(tasks);
 
 println!("已调度 {} 个定时器", batch_handle.len());
@@ -426,7 +426,7 @@ let callbacks: Vec<_> = (0..50)
     .map(|_| (Duration::from_secs(10), Some(CallbackWrapper::new(|| async {}))))
     .collect();
 
-let tasks = TimerWheel::create_batch(callbacks);
+let tasks = TimerWheel::create_batch_with_callbacks(callbacks);
 let batch_handle = timer.register_batch(tasks);
 
 // 批量取消
@@ -458,7 +458,7 @@ for _ in 0..100 {
 }
 
 // 批量推迟所有定时器
-let postponed = timer.postpone_batch(&task_ids);
+let postponed = timer.postpone_batch(task_ids);
 println!("已推迟 {} 个定时器", postponed);
 ```
 
@@ -542,7 +542,7 @@ let callbacks: Vec<_> = (0..10)
     })
     .collect();
 
-let tasks = TimerWheel::create_batch(callbacks);
+let tasks = TimerWheel::create_batch_with_callbacks(callbacks);
 let batch_handle = timer.register_batch(tasks);
 
 // 获取所有完成通知接收器
@@ -609,7 +609,7 @@ let callbacks: Vec<_> = (0..100)
     .map(|_| (Duration::from_millis(100), Some(CallbackWrapper::new(|| async {}))))
     .collect();
 
-let tasks = TimerService::create_batch(callbacks);
+let tasks = TimerService::create_batch_with_callbacks(callbacks);
 service.register_batch(tasks).unwrap();
 println!("已调度 100 个任务");
 
@@ -700,7 +700,7 @@ if let Some(completed_task_id) = rx.recv().await {
 let callbacks: Vec<_> = (0..10)
     .map(|_| (Duration::from_millis(50), Some(CallbackWrapper::new(|| async {}))))
     .collect();
-let tasks = TimerService::create_batch(callbacks);
+let tasks = TimerService::create_batch_with_callbacks(callbacks);
 let task_ids: Vec<_> = tasks.iter().map(|t| t.get_id()).collect();
 service.register_batch(tasks).unwrap();
 
@@ -783,25 +783,31 @@ let task = TimerWheel::create_task(Duration::from_secs(1), callback);
 let handle = timer.register(task);
 ```
 
-**`fn create_batch(callbacks: Vec<(Duration, Option<CallbackWrapper>)>) -> Vec<TimerTask>`**（静态方法）
+**`fn create_batch(delays: Vec<Duration>) -> Vec<TimerTask>`**（静态方法）
 
-批量创建定时器任务（申请阶段）。
+批量创建定时器任务（申请阶段，无回调）。
+
+参数：
+- `delays`：延迟时间的向量
+
+返回：
+- `Vec<TimerTask>`：待注册的任务列表
+
+```rust
+let delays = vec![Duration::from_secs(1), Duration::from_secs(2)];
+let tasks = TimerWheel::create_batch(delays);
+let batch = timer.register_batch(tasks);
+```
+
+**`fn create_batch_with_callbacks(callbacks: Vec<(Duration, Option<CallbackWrapper>)>) -> Vec<TimerTask>`**（静态方法）
+
+批量创建定时器任务（申请阶段，带回调）。
 
 参数：
 - `callbacks`：(延迟时间, 可选回调) 的向量
 
 返回：
 - `Vec<TimerTask>`：待注册的任务列表
-
-**`fn register_batch(&self, tasks: Vec<TimerTask>) -> BatchHandle`**
-
-批量注册定时器任务到时间轮（注册阶段）。
-
-参数：
-- `tasks`：通过 `create_batch()` 创建的任务列表
-
-返回：
-- `BatchHandle`：批量句柄
 
 ```rust
 use kestrel_protocol_timer::CallbackWrapper;
@@ -810,9 +816,19 @@ let callbacks = vec![
     (Duration::from_secs(1), Some(CallbackWrapper::new(|| async { println!("1"); }))),
     (Duration::from_secs(2), Some(CallbackWrapper::new(|| async { println!("2"); }))),
 ];
-let tasks = TimerWheel::create_batch(callbacks);
+let tasks = TimerWheel::create_batch_with_callbacks(callbacks);
 let batch = timer.register_batch(tasks);
 ```
+
+**`fn register_batch(&self, tasks: Vec<TimerTask>) -> BatchHandle`**
+
+批量注册定时器任务到时间轮（注册阶段）。
+
+参数：
+- `tasks`：通过 `create_batch()` 或 `create_batch_with_callbacks()` 创建的任务列表
+
+返回：
+- `BatchHandle`：批量句柄
 
 #### 推迟方法
 
@@ -842,12 +858,12 @@ let new_callback = Some(CallbackWrapper::new(|| async {
 let postponed = timer.postpone(task_id, Duration::from_secs(10), new_callback);
 ```
 
-**`fn postpone_batch(&self, updates: &[(TaskId, Duration)]) -> usize`**
+**`fn postpone_batch(&self, updates: Vec<(TaskId, Duration)>) -> usize`**
 
 批量推迟定时器任务（保持原回调）。
 
 参数：
-- `updates`：(任务ID, 新延迟) 的切片
+- `updates`：(任务ID, 新延迟) 的向量
 
 返回：成功推迟的任务数量
 
@@ -856,7 +872,7 @@ let updates = vec![
     (task_id1, Duration::from_secs(10)),
     (task_id2, Duration::from_secs(15)),
 ];
-let postponed = timer.postpone_batch(&updates);
+let postponed = timer.postpone_batch(updates);
 ```
 
 **`fn postpone_batch_with_callbacks(&self, updates: Vec<(TaskId, Duration, Option<CallbackWrapper>)>) -> usize`**
@@ -969,9 +985,20 @@ let callback = Some(CallbackWrapper::new(|| async {}));
 let task = TimerService::create_task(Duration::from_secs(1), callback);
 ```
 
-**`fn create_batch(callbacks: Vec<(Duration, Option<CallbackWrapper>)>) -> Vec<TimerTask>`**（静态方法）
+**`fn create_batch(delays: Vec<Duration>) -> Vec<TimerTask>`**（静态方法）
 
-批量创建定时器任务（申请阶段）。
+批量创建定时器任务（申请阶段，无回调）。
+
+返回：`Vec<TimerTask>`
+
+```rust
+let delays = vec![Duration::from_secs(1), Duration::from_secs(2)];
+let tasks = TimerService::create_batch(delays);
+```
+
+**`fn create_batch_with_callbacks(callbacks: Vec<(Duration, Option<CallbackWrapper>)>) -> Vec<TimerTask>`**（静态方法）
+
+批量创建定时器任务（申请阶段，带回调）。
 
 返回：`Vec<TimerTask>`
 
@@ -981,7 +1008,7 @@ use kestrel_protocol_timer::CallbackWrapper;
 let callbacks = vec![
     (Duration::from_secs(1), Some(CallbackWrapper::new(|| async {})))
 ];
-let tasks = TimerService::create_batch(callbacks);
+let tasks = TimerService::create_batch_with_callbacks(callbacks);
 ```
 
 **`fn register(&self, task: TimerTask) -> Result<(), TimerError>`**
@@ -998,7 +1025,7 @@ service.register(task).unwrap();
 批量注册定时器任务到服务（注册阶段）。
 
 ```rust
-let tasks = TimerService::create_batch(callbacks);
+let tasks = TimerService::create_batch_with_callbacks(callbacks);
 service.register_batch(tasks).unwrap();
 ```
 
@@ -1437,7 +1464,7 @@ let callbacks: Vec<_> = tasks.into_iter()
     })
     .collect();
 
-let task_list = TimerWheel::create_batch(callbacks);
+let task_list = TimerWheel::create_batch_with_callbacks(callbacks);
 timer.register_batch(task_list);
 ```
 
