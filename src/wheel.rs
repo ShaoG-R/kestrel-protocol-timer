@@ -348,6 +348,102 @@ impl Wheel {
     pub fn is_empty(&self) -> bool {
         self.task_index.is_empty()
     }
+
+    /// 推迟定时器任务（保持原 TaskId）
+    ///
+    /// # 参数
+    /// - `task_id`: 要推迟的任务 ID
+    /// - `new_delay`: 新的延迟时间（从当前时间点重新计算）
+    /// - `new_callback`: 新的回调函数（如果为 None 则保持原回调）
+    ///
+    /// # 返回
+    /// 如果任务存在且成功推迟返回 true，否则返回 false
+    ///
+    /// # 实现细节
+    /// - 从原槽位移除任务，保留其 completion_notifier
+    /// - 更新延迟时间和回调函数（如果提供）
+    /// - 根据新延迟重新计算槽位和轮次
+    /// - 使用原 TaskId 重新插入
+    #[inline]
+    pub fn postpone(
+        &mut self,
+        task_id: TaskId,
+        new_delay: Duration,
+        new_callback: Option<crate::task::CallbackWrapper>,
+    ) -> bool {
+        // 步骤1: 查找并移除原任务
+        if let Some(location) = self.task_index.remove(&task_id) {
+            let slot = &mut self.slots[location.slot_index];
+            
+            // 验证任务仍在预期位置
+            if location.vec_index < slot.len() && slot[location.vec_index].id == task_id {
+                // 使用 swap_remove 移除任务
+                let mut task = slot.swap_remove(location.vec_index);
+                
+                // 更新被交换元素的索引（如果发生了交换）
+                if location.vec_index < slot.len() {
+                    let swapped_task_id = slot[location.vec_index].id;
+                    if let Some(swapped_location) = self.task_index.get_mut(&swapped_task_id) {
+                        swapped_location.vec_index = location.vec_index;
+                    }
+                }
+                
+                // 步骤2: 更新任务的延迟和回调
+                task.delay = new_delay;
+                if let Some(callback) = new_callback {
+                    task.callback = Some(callback);
+                }
+                
+                // 步骤3: 根据新延迟重新计算槽位和轮次
+                let ticks = self.delay_to_ticks(new_delay);
+                let total_ticks = self.current_tick + ticks;
+                let new_slot_index = (total_ticks as usize) & (self.slot_count - 1);
+                let new_rounds = (total_ticks / self.slot_count as u64)
+                    .saturating_sub(self.current_tick / self.slot_count as u64) as u32;
+                
+                // 更新任务的时间轮参数
+                task.deadline_tick = total_ticks;
+                task.rounds = new_rounds;
+                
+                // 步骤4: 重新插入任务到新槽位
+                let new_vec_index = self.slots[new_slot_index].len();
+                let new_location = TaskLocation::new(new_slot_index, new_vec_index, task_id);
+                
+                self.slots[new_slot_index].push(task);
+                self.task_index.insert(task_id, new_location);
+                
+                return true;
+            }
+        }
+        false
+    }
+
+    /// 批量推迟定时器任务
+    ///
+    /// # 参数
+    /// - `updates`: (任务ID, 新延迟, 新回调) 的元组列表
+    ///
+    /// # 返回
+    /// 成功推迟的任务数量
+    ///
+    /// # 性能优势
+    /// - 批量处理减少重复计算
+    /// - 按新槽位分组优化插入
+    #[inline]
+    pub fn postpone_batch(
+        &mut self,
+        updates: Vec<(TaskId, Duration, Option<crate::task::CallbackWrapper>)>,
+    ) -> usize {
+        let mut postponed_count = 0;
+        
+        for (task_id, new_delay, new_callback) in updates {
+            if self.postpone(task_id, new_delay, new_callback) {
+                postponed_count += 1;
+            }
+        }
+        
+        postponed_count
+    }
 }
 
 #[cfg(test)]
@@ -468,6 +564,178 @@ mod tests {
         let cancelled_count = wheel.cancel_batch(&task_ids);
         assert_eq!(cancelled_count, 20);
         assert!(wheel.is_empty());
+    }
+
+    #[test]
+    fn test_postpone_single_task() {
+        use std::sync::Arc;
+        use crate::task::{TimerTask, CompletionNotifier};
+        
+        let mut wheel = Wheel::new(WheelConfig::default());
+        
+        // 插入任务，延迟 100ms
+        let callback = Arc::new(|| async {}) as Arc<dyn crate::task::TimerCallback>;
+        let (completion_tx, _completion_rx) = tokio::sync::oneshot::channel();
+        let notifier = CompletionNotifier(completion_tx);
+        let task = TimerTask::new(Duration::from_millis(100), Some(callback));
+        let task_id = wheel.insert(Duration::from_millis(100), task, notifier);
+        
+        // 推迟任务到 200ms（保持原回调）
+        let postponed = wheel.postpone(task_id, Duration::from_millis(200), None);
+        assert!(postponed);
+        
+        // 验证任务仍在时间轮中
+        assert!(!wheel.is_empty());
+        
+        // 推进 100ms（10 ticks），任务不应该触发
+        for _ in 0..10 {
+            let expired = wheel.advance();
+            assert!(expired.is_empty());
+        }
+        
+        // 再推进 100ms（10 ticks），任务应该触发
+        let mut triggered = false;
+        for _ in 0..10 {
+            let expired = wheel.advance();
+            if !expired.is_empty() {
+                assert_eq!(expired.len(), 1);
+                assert_eq!(expired[0].id, task_id);
+                triggered = true;
+                break;
+            }
+        }
+        assert!(triggered);
+    }
+
+    #[test]
+    fn test_postpone_with_new_callback() {
+        use std::sync::Arc;
+        use crate::task::{TimerTask, CompletionNotifier};
+        
+        let mut wheel = Wheel::new(WheelConfig::default());
+        
+        // 插入任务，带原始回调
+        let old_callback = Arc::new(|| async {}) as Arc<dyn crate::task::TimerCallback>;
+        let (completion_tx, _completion_rx) = tokio::sync::oneshot::channel();
+        let notifier = CompletionNotifier(completion_tx);
+        let task = TimerTask::new(Duration::from_millis(100), Some(old_callback.clone()));
+        let task_id = wheel.insert(Duration::from_millis(100), task, notifier);
+        
+        // 推迟任务并替换回调
+        let new_callback = Arc::new(|| async {}) as Arc<dyn crate::task::TimerCallback>;
+        let postponed = wheel.postpone(task_id, Duration::from_millis(50), Some(new_callback.clone()));
+        assert!(postponed);
+        
+        // 推进 50ms（5 ticks），任务应该触发
+        let mut triggered = false;
+        for _ in 0..6 {
+            let expired = wheel.advance();
+            if !expired.is_empty() {
+                assert_eq!(expired.len(), 1);
+                assert_eq!(expired[0].id, task_id);
+                // 验证回调已被替换（通过 Arc::ptr_eq 检查指针）
+                triggered = true;
+                break;
+            }
+        }
+        assert!(triggered);
+    }
+
+    #[test]
+    fn test_postpone_nonexistent_task() {
+        let mut wheel = Wheel::new(WheelConfig::default());
+        
+        // 尝试推迟不存在的任务
+        let fake_task_id = TaskId::new();
+        let postponed = wheel.postpone(fake_task_id, Duration::from_millis(100), None);
+        assert!(!postponed);
+    }
+
+    #[test]
+    fn test_postpone_batch() {
+        use std::sync::Arc;
+        use crate::task::{TimerTask, CompletionNotifier};
+        
+        let mut wheel = Wheel::new(WheelConfig::default());
+        
+        // 插入 5 个任务
+        let mut task_ids = Vec::new();
+        for _ in 0..5 {
+            let callback = Arc::new(|| async {}) as Arc<dyn crate::task::TimerCallback>;
+            let (completion_tx, _completion_rx) = tokio::sync::oneshot::channel();
+            let notifier = CompletionNotifier(completion_tx);
+            let task = TimerTask::new(Duration::from_millis(50), Some(callback));
+            let task_id = wheel.insert(Duration::from_millis(50), task, notifier);
+            task_ids.push(task_id);
+        }
+        
+        // 批量推迟所有任务到 150ms
+        let updates: Vec<_> = task_ids
+            .iter()
+            .map(|&id| (id, Duration::from_millis(150), None))
+            .collect();
+        let postponed_count = wheel.postpone_batch(updates);
+        assert_eq!(postponed_count, 5);
+        
+        // 推进 50ms，任务不应该触发
+        for _ in 0..5 {
+            let expired = wheel.advance();
+            assert!(expired.is_empty());
+        }
+        
+        // 继续推进到 150ms，所有任务应该触发
+        let mut total_triggered = 0;
+        for _ in 0..15 {
+            let expired = wheel.advance();
+            total_triggered += expired.len();
+        }
+        assert_eq!(total_triggered, 5);
+    }
+
+    #[test]
+    fn test_postpone_batch_partial() {
+        use std::sync::Arc;
+        use crate::task::{TimerTask, CompletionNotifier};
+        
+        let mut wheel = Wheel::new(WheelConfig::default());
+        
+        // 插入 10 个任务
+        let mut task_ids = Vec::new();
+        for _ in 0..10 {
+            let callback = Arc::new(|| async {}) as Arc<dyn crate::task::TimerCallback>;
+            let (completion_tx, _completion_rx) = tokio::sync::oneshot::channel();
+            let notifier = CompletionNotifier(completion_tx);
+            let task = TimerTask::new(Duration::from_millis(50), Some(callback));
+            let task_id = wheel.insert(Duration::from_millis(50), task, notifier);
+            task_ids.push(task_id);
+        }
+        
+        // 只推迟前 5 个任务，包含一个不存在的任务
+        let fake_task_id = TaskId::new();
+        let mut updates: Vec<_> = task_ids[0..5]
+            .iter()
+            .map(|&id| (id, Duration::from_millis(150), None))
+            .collect();
+        updates.push((fake_task_id, Duration::from_millis(150), None));
+        
+        let postponed_count = wheel.postpone_batch(updates);
+        assert_eq!(postponed_count, 5); // 只有 5 个成功，fake_task_id 失败
+        
+        // 推进 50ms，后 5 个未推迟的任务应该触发
+        let mut triggered_at_50ms = 0;
+        for _ in 0..6 {
+            let expired = wheel.advance();
+            triggered_at_50ms += expired.len();
+        }
+        assert_eq!(triggered_at_50ms, 5);
+        
+        // 继续推进到 150ms，前 5 个推迟的任务应该触发
+        let mut triggered_at_150ms = 0;
+        for _ in 0..15 {
+            let expired = wheel.advance();
+            triggered_at_150ms += expired.len();
+        }
+        assert_eq!(triggered_at_150ms, 5);
     }
 }
 

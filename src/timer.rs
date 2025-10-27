@@ -689,6 +689,223 @@ impl TimerWheel {
         let mut wheel = self.wheel.lock();
         wheel.cancel_batch(task_ids)
     }
+
+    /// 推迟定时器（保持原回调）
+    ///
+    /// # 参数
+    /// - `task_id`: 要推迟的任务 ID
+    /// - `new_delay`: 新的延迟时间（从当前时间点重新计算）
+    ///
+    /// # 返回
+    /// 如果任务存在且成功推迟返回 true，否则返回 false
+    ///
+    /// # 注意
+    /// - 推迟后任务 ID 保持不变
+    /// - 原有的 completion_receiver 仍然有效
+    /// - 保持原回调函数不变
+    ///
+    /// # 示例
+    /// ```no_run
+    /// use kestrel_protocol_timer::{TimerWheel, TimerTask};
+    /// use std::time::Duration;
+    ///
+    /// #[tokio::main]
+    /// async fn main() {
+    ///     let timer = TimerWheel::with_defaults();
+    ///     
+    ///     let task = TimerWheel::create_task(Duration::from_secs(5), || async {
+    ///         println!("Timer fired!");
+    ///     });
+    ///     let task_id = task.get_id();
+    ///     let _handle = timer.register(task);
+    ///     
+    ///     // 推迟到 10 秒后触发
+    ///     let success = timer.postpone(task_id, Duration::from_secs(10));
+    ///     println!("推迟成功: {}", success);
+    /// }
+    /// ```
+    #[inline]
+    pub fn postpone(&self, task_id: TaskId, new_delay: Duration) -> bool {
+        let mut wheel = self.wheel.lock();
+        wheel.postpone(task_id, new_delay, None)
+    }
+
+    /// 推迟定时器（替换回调）
+    ///
+    /// # 参数
+    /// - `task_id`: 要推迟的任务 ID
+    /// - `new_delay`: 新的延迟时间（从当前时间点重新计算）
+    /// - `callback`: 新的回调函数
+    ///
+    /// # 返回
+    /// 如果任务存在且成功推迟返回 true，否则返回 false
+    ///
+    /// # 注意
+    /// - 推迟后任务 ID 保持不变
+    /// - 原有的 completion_receiver 仍然有效
+    /// - 回调函数会被替换为新的回调
+    ///
+    /// # 示例
+    /// ```no_run
+    /// use kestrel_protocol_timer::{TimerWheel, TimerTask};
+    /// use std::time::Duration;
+    ///
+    /// #[tokio::main]
+    /// async fn main() {
+    ///     let timer = TimerWheel::with_defaults();
+    ///     
+    ///     let task = TimerWheel::create_task(Duration::from_secs(5), || async {
+    ///         println!("Original callback");
+    ///     });
+    ///     let task_id = task.get_id();
+    ///     let _handle = timer.register(task);
+    ///     
+    ///     // 推迟并替换回调
+    ///     let success = timer.postpone_with_callback(
+    ///         task_id,
+    ///         Duration::from_secs(10),
+    ///         || async {
+    ///             println!("New callback!");
+    ///         }
+    ///     );
+    ///     println!("推迟成功: {}", success);
+    /// }
+    /// ```
+    #[inline]
+    pub fn postpone_with_callback<C>(
+        &self,
+        task_id: TaskId,
+        new_delay: Duration,
+        callback: C,
+    ) -> bool
+    where
+        C: TimerCallback,
+    {
+        use std::sync::Arc;
+        let callback_wrapper = Arc::new(callback) as CallbackWrapper;
+        let mut wheel = self.wheel.lock();
+        wheel.postpone(task_id, new_delay, Some(callback_wrapper))
+    }
+
+    /// 批量推迟定时器（保持原回调）
+    ///
+    /// # 参数
+    /// - `updates`: (任务ID, 新延迟) 的元组列表
+    ///
+    /// # 返回
+    /// 成功推迟的任务数量
+    ///
+    /// # 性能优势
+    /// - 批量处理减少锁竞争
+    /// - 内部优化批量推迟操作
+    ///
+    /// # 示例
+    /// ```no_run
+    /// use kestrel_protocol_timer::{TimerWheel, TimerTask};
+    /// use std::time::Duration;
+    ///
+    /// #[tokio::main]
+    /// async fn main() {
+    ///     let timer = TimerWheel::with_defaults();
+    ///     
+    ///     // 创建多个定时器
+    ///     let task1 = TimerWheel::create_task(Duration::from_secs(5), || async {});
+    ///     let task2 = TimerWheel::create_task(Duration::from_secs(5), || async {});
+    ///     let task3 = TimerWheel::create_task(Duration::from_secs(5), || async {});
+    ///     
+    ///     let task_ids = vec![
+    ///         (task1.get_id(), Duration::from_secs(10)),
+    ///         (task2.get_id(), Duration::from_secs(15)),
+    ///         (task3.get_id(), Duration::from_secs(20)),
+    ///     ];
+    ///     
+    ///     timer.register(task1);
+    ///     timer.register(task2);
+    ///     timer.register(task3);
+    ///     
+    ///     // 批量推迟
+    ///     let postponed = timer.postpone_batch(&task_ids);
+    ///     println!("已推迟 {} 个定时器", postponed);
+    /// }
+    /// ```
+    #[inline]
+    pub fn postpone_batch(&self, updates: &[(TaskId, Duration)]) -> usize {
+        let updates_vec: Vec<_> = updates
+            .iter()
+            .map(|(task_id, delay)| (*task_id, *delay, None))
+            .collect();
+        let mut wheel = self.wheel.lock();
+        wheel.postpone_batch(updates_vec)
+    }
+
+    /// 批量推迟定时器（替换回调）
+    ///
+    /// # 参数
+    /// - `updates`: (任务ID, 新延迟, 新回调) 的元组列表
+    ///
+    /// # 返回
+    /// 成功推迟的任务数量
+    ///
+    /// # 性能优势
+    /// - 批量处理减少锁竞争
+    /// - 内部优化批量推迟操作
+    ///
+    /// # 示例
+    /// ```no_run
+    /// use kestrel_protocol_timer::{TimerWheel, TimerTask};
+    /// use std::time::Duration;
+    /// use std::sync::Arc;
+    /// use std::sync::atomic::{AtomicU32, Ordering};
+    ///
+    /// #[tokio::main]
+    /// async fn main() {
+    ///     let timer = TimerWheel::with_defaults();
+    ///     let counter = Arc::new(AtomicU32::new(0));
+    ///     
+    ///     // 创建多个定时器
+    ///     let task1 = TimerWheel::create_task(Duration::from_secs(5), || async {});
+    ///     let task2 = TimerWheel::create_task(Duration::from_secs(5), || async {});
+    ///     
+    ///     let id1 = task1.get_id();
+    ///     let id2 = task2.get_id();
+    ///     
+    ///     timer.register(task1);
+    ///     timer.register(task2);
+    ///     
+    ///     // 批量推迟并替换回调
+    ///     let updates: Vec<_> = vec![id1, id2]
+    ///         .into_iter()
+    ///         .map(|id| {
+    ///             let counter = Arc::clone(&counter);
+    ///             (id, Duration::from_secs(10), move || {
+    ///                 let counter = Arc::clone(&counter);
+    ///                 async move { counter.fetch_add(1, Ordering::SeqCst); }
+    ///             })
+    ///         })
+    ///         .collect();
+    ///     let postponed = timer.postpone_batch_with_callbacks(updates);
+    ///     println!("已推迟 {} 个定时器", postponed);
+    /// }
+    /// ```
+    #[inline]
+    pub fn postpone_batch_with_callbacks<C>(
+        &self,
+        updates: Vec<(TaskId, Duration, C)>,
+    ) -> usize
+    where
+        C: TimerCallback,
+    {
+        use std::sync::Arc;
+        let updates_vec: Vec<_> = updates
+            .into_iter()
+            .map(|(task_id, delay, callback)| {
+                let callback_wrapper = Arc::new(callback) as CallbackWrapper;
+                (task_id, delay, Some(callback_wrapper))
+            })
+            .collect();
+        let mut wheel = self.wheel.lock();
+        wheel.postpone_batch(updates_vec)
+    }
     
     /// 核心 tick 循环
     async fn tick_loop(wheel: Arc<Mutex<Wheel>>, tick_duration: Duration) {
@@ -834,6 +1051,225 @@ mod tests {
         // 等待足够长时间确保定时器不会触发
         tokio::time::sleep(Duration::from_millis(200)).await;
         assert_eq!(counter.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn test_postpone_timer() {
+        use std::sync::Arc;
+        let timer = TimerWheel::with_defaults();
+        let counter = Arc::new(AtomicU32::new(0));
+        let counter_clone = Arc::clone(&counter);
+
+        let task = TimerWheel::create_task(
+            Duration::from_millis(50),
+            move || {
+                let counter = Arc::clone(&counter_clone);
+                async move {
+                    counter.fetch_add(1, Ordering::SeqCst);
+                }
+            },
+        );
+        let task_id = task.get_id();
+        let handle = timer.register(task);
+
+        // 推迟任务到 150ms
+        let postponed = timer.postpone(task_id, Duration::from_millis(150));
+        assert!(postponed);
+
+        // 等待原定时间 50ms，任务不应该触发
+        tokio::time::sleep(Duration::from_millis(70)).await;
+        assert_eq!(counter.load(Ordering::SeqCst), 0);
+
+        // 等待新的触发时间（从推迟开始算，还需要等待约 150ms）
+        let result = tokio::time::timeout(
+            Duration::from_millis(200),
+            handle.into_completion_receiver().0
+        ).await;
+        assert!(result.is_ok());
+        
+        // 等待回调执行
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        assert_eq!(counter.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn test_postpone_with_callback() {
+        use std::sync::Arc;
+        let timer = TimerWheel::with_defaults();
+        let counter = Arc::new(AtomicU32::new(0));
+        let counter_clone1 = Arc::clone(&counter);
+        let counter_clone2 = Arc::clone(&counter);
+
+        // 创建任务，原始回调增加 1
+        let task = TimerWheel::create_task(
+            Duration::from_millis(50),
+            move || {
+                let counter = Arc::clone(&counter_clone1);
+                async move {
+                    counter.fetch_add(1, Ordering::SeqCst);
+                }
+            },
+        );
+        let task_id = task.get_id();
+        let handle = timer.register(task);
+
+        // 推迟任务并替换回调，新回调增加 10
+        let postponed = timer.postpone_with_callback(
+            task_id,
+            Duration::from_millis(100),
+            move || {
+                let counter = Arc::clone(&counter_clone2);
+                async move {
+                    counter.fetch_add(10, Ordering::SeqCst);
+                }
+            }
+        );
+        assert!(postponed);
+
+        // 等待任务触发（推迟后需要等待100ms，加上余量）
+        let result = tokio::time::timeout(
+            Duration::from_millis(200),
+            handle.into_completion_receiver().0
+        ).await;
+        assert!(result.is_ok());
+        
+        // 等待回调执行
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        
+        // 验证新回调被执行（增加了 10 而不是 1）
+        assert_eq!(counter.load(Ordering::SeqCst), 10);
+    }
+
+    #[tokio::test]
+    async fn test_postpone_nonexistent_timer() {
+        let timer = TimerWheel::with_defaults();
+        
+        // 尝试推迟不存在的任务
+        let fake_task = TimerWheel::create_task(Duration::from_millis(50), || async {});
+        let fake_task_id = fake_task.get_id();
+        // 不注册这个任务
+        
+        let postponed = timer.postpone(fake_task_id, Duration::from_millis(100));
+        assert!(!postponed);
+    }
+
+    #[tokio::test]
+    async fn test_postpone_batch() {
+        use std::sync::Arc;
+        let timer = TimerWheel::with_defaults();
+        let counter = Arc::new(AtomicU32::new(0));
+
+        // 创建 3 个任务
+        let mut task_ids = Vec::new();
+        for _ in 0..3 {
+            let counter_clone = Arc::clone(&counter);
+            let task = TimerWheel::create_task(
+                Duration::from_millis(50),
+                move || {
+                    let counter = Arc::clone(&counter_clone);
+                    async move {
+                        counter.fetch_add(1, Ordering::SeqCst);
+                    }
+                },
+            );
+            task_ids.push((task.get_id(), Duration::from_millis(150)));
+            timer.register(task);
+        }
+
+        // 批量推迟
+        let postponed = timer.postpone_batch(&task_ids);
+        assert_eq!(postponed, 3);
+
+        // 等待原定时间 50ms，任务不应该触发
+        tokio::time::sleep(Duration::from_millis(70)).await;
+        assert_eq!(counter.load(Ordering::SeqCst), 0);
+
+        // 等待新的触发时间（从推迟开始算，还需要等待约 150ms）
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        
+        // 等待回调执行
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        assert_eq!(counter.load(Ordering::SeqCst), 3);
+    }
+
+    #[tokio::test]
+    async fn test_postpone_batch_with_callbacks() {
+        use std::sync::Arc;
+        let timer = TimerWheel::with_defaults();
+        let counter = Arc::new(AtomicU32::new(0));
+
+        // 创建 3 个任务
+        let mut task_ids = Vec::new();
+        for _ in 0..3 {
+            let task = TimerWheel::create_task(
+                Duration::from_millis(50),
+                || async {},
+            );
+            task_ids.push(task.get_id());
+            timer.register(task);
+        }
+
+        // 批量推迟并替换回调
+        let updates: Vec<_> = task_ids
+            .into_iter()
+            .map(|id| {
+                let counter_clone = Arc::clone(&counter);
+                (id, Duration::from_millis(150), move || {
+                    let counter = Arc::clone(&counter_clone);
+                    async move {
+                        counter.fetch_add(1, Ordering::SeqCst);
+                    }
+                })
+            })
+            .collect();
+
+        let postponed = timer.postpone_batch_with_callbacks(updates);
+        assert_eq!(postponed, 3);
+
+        // 等待原定时间 50ms，任务不应该触发
+        tokio::time::sleep(Duration::from_millis(70)).await;
+        assert_eq!(counter.load(Ordering::SeqCst), 0);
+
+        // 等待新的触发时间（从推迟开始算，还需要等待约 150ms）
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        
+        // 等待回调执行
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        assert_eq!(counter.load(Ordering::SeqCst), 3);
+    }
+
+    #[tokio::test]
+    async fn test_postpone_keeps_completion_receiver_valid() {
+        use std::sync::Arc;
+        let timer = TimerWheel::with_defaults();
+        let counter = Arc::new(AtomicU32::new(0));
+        let counter_clone = Arc::clone(&counter);
+
+        let task = TimerWheel::create_task(
+            Duration::from_millis(50),
+            move || {
+                let counter = Arc::clone(&counter_clone);
+                async move {
+                    counter.fetch_add(1, Ordering::SeqCst);
+                }
+            },
+        );
+        let task_id = task.get_id();
+        let handle = timer.register(task);
+
+        // 推迟任务
+        timer.postpone(task_id, Duration::from_millis(100));
+
+        // 验证原 completion_receiver 仍然有效（推迟后需要等待100ms，加上余量）
+        let result = tokio::time::timeout(
+            Duration::from_millis(200),
+            handle.into_completion_receiver().0
+        ).await;
+        assert!(result.is_ok(), "Completion receiver should still work after postpone");
+        
+        // 等待回调执行
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        assert_eq!(counter.load(Ordering::SeqCst), 1);
     }
 }
 

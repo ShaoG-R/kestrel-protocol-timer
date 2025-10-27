@@ -340,3 +340,254 @@ async fn test_batch_cancel_no_wait() {
     assert!(elapsed < Duration::from_millis(10), "无等待的批量取消应该非常快");
 }
 
+#[tokio::test]
+async fn test_postpone_single_timer() {
+    // 测试单个定时器的推迟功能
+    let timer = TimerWheel::with_defaults();
+    let counter = Arc::new(AtomicU32::new(0));
+    let counter_clone = Arc::clone(&counter);
+
+    let task = TimerWheel::create_task(
+        Duration::from_millis(50),
+        move || {
+            let counter = Arc::clone(&counter_clone);
+            async move {
+                counter.fetch_add(1, Ordering::SeqCst);
+            }
+        },
+    );
+    let task_id = task.get_id();
+    let handle = timer.register(task);
+
+    // 推迟任务到 150ms
+    let postponed = timer.postpone(task_id, Duration::from_millis(150));
+    assert!(postponed, "任务应该成功推迟");
+
+    // 等待原定时间 50ms，任务不应该触发
+    tokio::time::sleep(Duration::from_millis(70)).await;
+    assert_eq!(counter.load(Ordering::SeqCst), 0, "任务不应在原定时间触发");
+
+    // 等待新的触发时间
+    let result = tokio::time::timeout(
+        Duration::from_millis(200),
+        handle.into_completion_receiver().0
+    ).await;
+    assert!(result.is_ok(), "任务应该在推迟后的时间触发");
+    
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    assert_eq!(counter.load(Ordering::SeqCst), 1, "任务应该被执行一次");
+}
+
+#[tokio::test]
+async fn test_postpone_with_new_callback() {
+    // 测试推迟并替换回调函数
+    let timer = TimerWheel::with_defaults();
+    let counter = Arc::new(AtomicU32::new(0));
+    let counter_clone1 = Arc::clone(&counter);
+    let counter_clone2 = Arc::clone(&counter);
+
+    // 创建任务，原始回调增加 1
+    let task = TimerWheel::create_task(
+        Duration::from_millis(50),
+        move || {
+            let counter = Arc::clone(&counter_clone1);
+            async move {
+                counter.fetch_add(1, Ordering::SeqCst);
+            }
+        },
+    );
+    let task_id = task.get_id();
+    let handle = timer.register(task);
+
+    // 推迟任务并替换回调，新回调增加 10
+    let postponed = timer.postpone_with_callback(
+        task_id,
+        Duration::from_millis(100),
+        move || {
+            let counter = Arc::clone(&counter_clone2);
+            async move {
+                counter.fetch_add(10, Ordering::SeqCst);
+            }
+        }
+    );
+    assert!(postponed, "任务应该成功推迟并替换回调");
+
+    // 等待任务触发
+    let result = tokio::time::timeout(
+        Duration::from_millis(200),
+        handle.into_completion_receiver().0
+    ).await;
+    assert!(result.is_ok(), "任务应该触发");
+    
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    assert_eq!(counter.load(Ordering::SeqCst), 10, "新回调应该被执行（增加10而不是1）");
+}
+
+#[tokio::test]
+async fn test_batch_postpone() {
+    // 测试批量推迟定时器
+    let timer = TimerWheel::with_defaults();
+    let counter = Arc::new(AtomicU32::new(0));
+    const BATCH_SIZE: usize = 100;
+
+    // 创建批量任务
+    let mut task_ids = Vec::new();
+    for _ in 0..BATCH_SIZE {
+        let counter_clone = Arc::clone(&counter);
+        let task = TimerWheel::create_task(
+            Duration::from_millis(50),
+            move || {
+                let counter = Arc::clone(&counter_clone);
+                async move {
+                    counter.fetch_add(1, Ordering::SeqCst);
+                }
+            },
+        );
+        task_ids.push((task.get_id(), Duration::from_millis(150)));
+        timer.register(task);
+    }
+
+    let start = Instant::now();
+    let postponed = timer.postpone_batch(&task_ids);
+    let elapsed = start.elapsed();
+    
+    println!("批量推迟 {} 个定时器耗时: {:?}", BATCH_SIZE, elapsed);
+    assert_eq!(postponed, BATCH_SIZE, "所有任务都应该成功推迟");
+
+    // 等待原定时间 50ms，任务不应该触发
+    tokio::time::sleep(Duration::from_millis(70)).await;
+    assert_eq!(counter.load(Ordering::SeqCst), 0, "任务不应在原定时间触发");
+
+    // 等待新的触发时间
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert_eq!(counter.load(Ordering::SeqCst), BATCH_SIZE as u32, "所有任务都应该被执行");
+}
+
+#[tokio::test]
+async fn test_postpone_batch_with_callbacks() {
+    // 测试批量推迟并替换回调
+    let timer = TimerWheel::with_defaults();
+    let counter = Arc::new(AtomicU32::new(0));
+    const BATCH_SIZE: usize = 50;
+
+    // 创建批量任务（初始回调为空）
+    let mut task_ids = Vec::new();
+    for _ in 0..BATCH_SIZE {
+        let task = TimerWheel::create_task(
+            Duration::from_millis(50),
+            || async {},
+        );
+        task_ids.push(task.get_id());
+        timer.register(task);
+    }
+
+    // 批量推迟并替换回调
+    let updates: Vec<_> = task_ids
+        .into_iter()
+        .map(|id| {
+            let counter = Arc::clone(&counter);
+            (id, Duration::from_millis(150), move || {
+                let counter = Arc::clone(&counter);
+                async move {
+                    counter.fetch_add(1, Ordering::SeqCst);
+                }
+            })
+        })
+        .collect();
+
+    let start = Instant::now();
+    let postponed = timer.postpone_batch_with_callbacks(updates);
+    let elapsed = start.elapsed();
+    
+    println!("批量推迟并替换回调 {} 个定时器耗时: {:?}", BATCH_SIZE, elapsed);
+    assert_eq!(postponed, BATCH_SIZE, "所有任务都应该成功推迟");
+
+    // 等待原定时间 50ms，任务不应该触发
+    tokio::time::sleep(Duration::from_millis(70)).await;
+    assert_eq!(counter.load(Ordering::SeqCst), 0, "任务不应在原定时间触发");
+
+    // 等待新的触发时间
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert_eq!(counter.load(Ordering::SeqCst), BATCH_SIZE as u32, "所有新回调都应该被执行");
+}
+
+#[tokio::test]
+async fn test_postpone_multiple_times() {
+    // 测试多次推迟同一个定时器
+    let timer = TimerWheel::with_defaults();
+    let counter = Arc::new(AtomicU32::new(0));
+    let counter_clone = Arc::clone(&counter);
+
+    let task = TimerWheel::create_task(
+        Duration::from_millis(50),
+        move || {
+            let counter = Arc::clone(&counter_clone);
+            async move {
+                counter.fetch_add(1, Ordering::SeqCst);
+            }
+        },
+    );
+    let task_id = task.get_id();
+    let handle = timer.register(task);
+
+    // 第一次推迟到 100ms
+    assert!(timer.postpone(task_id, Duration::from_millis(100)));
+    tokio::time::sleep(Duration::from_millis(60)).await;
+    assert_eq!(counter.load(Ordering::SeqCst), 0, "第一次推迟后不应触发");
+
+    // 第二次推迟到 150ms
+    assert!(timer.postpone(task_id, Duration::from_millis(150)));
+    tokio::time::sleep(Duration::from_millis(60)).await;
+    assert_eq!(counter.load(Ordering::SeqCst), 0, "第二次推迟后不应触发");
+
+    // 第三次推迟到 100ms
+    assert!(timer.postpone(task_id, Duration::from_millis(100)));
+    
+    // 等待最终触发
+    let result = tokio::time::timeout(
+        Duration::from_millis(200),
+        handle.into_completion_receiver().0
+    ).await;
+    assert!(result.is_ok(), "任务应该最终触发");
+    
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    assert_eq!(counter.load(Ordering::SeqCst), 1, "任务应该只执行一次");
+}
+
+#[tokio::test]
+async fn test_postpone_with_service() {
+    // 测试通过 TimerService 推迟定时器
+    let timer = TimerWheel::with_defaults();
+    let mut service = timer.create_service();
+    let counter = Arc::new(AtomicU32::new(0));
+    let counter_clone = Arc::clone(&counter);
+
+    let task = kestrel_protocol_timer::TimerService::create_task(
+        Duration::from_millis(50),
+        move || {
+            let counter = Arc::clone(&counter_clone);
+            async move {
+                counter.fetch_add(1, Ordering::SeqCst);
+            }
+        },
+    );
+    let task_id = task.get_id();
+    service.register(task).await;
+
+    // 推迟任务
+    let postponed = service.postpone_task(task_id, Duration::from_millis(150)).await;
+    assert!(postponed, "任务应该成功推迟");
+
+    // 等待原定时间，任务不应该触发
+    tokio::time::sleep(Duration::from_millis(70)).await;
+    assert_eq!(counter.load(Ordering::SeqCst), 0, "任务不应在原定时间触发");
+
+    // 接收超时通知
+    let mut rx = service.take_receiver().unwrap();
+    let result = tokio::time::timeout(Duration::from_millis(200), rx.recv()).await;
+    assert!(result.is_ok(), "应该收到超时通知");
+    
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    assert_eq!(counter.load(Ordering::SeqCst), 1, "任务应该被执行");
+}
+

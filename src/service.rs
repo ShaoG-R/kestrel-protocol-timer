@@ -226,6 +226,215 @@ impl TimerService {
         wheel.cancel_batch(task_ids)
     }
 
+    /// 推迟任务（保持原回调）
+    ///
+    /// # 参数
+    /// - `task_id`: 要推迟的任务 ID
+    /// - `new_delay`: 新的延迟时间（从当前时间点重新计算）
+    ///
+    /// # 返回
+    /// - `true`: 任务存在且成功推迟
+    /// - `false`: 任务不存在或推迟失败
+    ///
+    /// # 性能说明
+    /// 此方法使用直接推迟优化，不需要等待 Actor 处理，大幅降低延迟
+    ///
+    /// # 注意
+    /// - 推迟后任务 ID 保持不变
+    /// - 原有的超时通知仍然有效
+    /// - 保持原回调函数不变
+    ///
+    /// # 示例
+    /// ```no_run
+    /// # use kestrel_protocol_timer::{TimerWheel, TimerService};
+    /// # use std::time::Duration;
+    /// # #[tokio::main]
+    /// # async fn main() {
+    /// let timer = TimerWheel::with_defaults();
+    /// let service = timer.create_service();
+    /// 
+    /// let task = TimerService::create_task(Duration::from_secs(5), || async {});
+    /// let task_id = task.get_id();
+    /// service.register(task).await;
+    /// 
+    /// // 推迟到 10 秒后触发
+    /// let success = service.postpone_task(task_id, Duration::from_secs(10)).await;
+    /// println!("推迟成功: {}", success);
+    /// # }
+    /// ```
+    #[inline]
+    pub async fn postpone_task(&self, task_id: TaskId, new_delay: Duration) -> bool {
+        // 优化：直接推迟任务，无需通知 Actor
+        // FuturesUnordered 会继续监听原有的 completion_receiver
+        let mut wheel = self.wheel.lock();
+        wheel.postpone(task_id, new_delay, None)
+    }
+
+    /// 推迟任务（替换回调）
+    ///
+    /// # 参数
+    /// - `task_id`: 要推迟的任务 ID
+    /// - `new_delay`: 新的延迟时间（从当前时间点重新计算）
+    /// - `callback`: 新的回调函数
+    ///
+    /// # 返回
+    /// - `true`: 任务存在且成功推迟
+    /// - `false`: 任务不存在或推迟失败
+    ///
+    /// # 注意
+    /// - 推迟后任务 ID 保持不变
+    /// - 原有的超时通知仍然有效
+    /// - 回调函数会被替换为新的回调
+    ///
+    /// # 示例
+    /// ```no_run
+    /// # use kestrel_protocol_timer::{TimerWheel, TimerService};
+    /// # use std::time::Duration;
+    /// # #[tokio::main]
+    /// # async fn main() {
+    /// let timer = TimerWheel::with_defaults();
+    /// let service = timer.create_service();
+    /// 
+    /// let task = TimerService::create_task(Duration::from_secs(5), || async {
+    ///     println!("Original callback");
+    /// });
+    /// let task_id = task.get_id();
+    /// service.register(task).await;
+    /// 
+    /// // 推迟并替换回调
+    /// let success = service.postpone_task_with_callback(
+    ///     task_id,
+    ///     Duration::from_secs(10),
+    ///     || async { println!("New callback!"); }
+    /// ).await;
+    /// println!("推迟成功: {}", success);
+    /// # }
+    /// ```
+    #[inline]
+    pub async fn postpone_task_with_callback<C>(
+        &self,
+        task_id: TaskId,
+        new_delay: Duration,
+        callback: C,
+    ) -> bool
+    where
+        C: TimerCallback,
+    {
+        use std::sync::Arc;
+        let callback_wrapper = Arc::new(callback) as Arc<dyn TimerCallback>;
+        let mut wheel = self.wheel.lock();
+        wheel.postpone(task_id, new_delay, Some(callback_wrapper))
+    }
+
+    /// 批量推迟任务（保持原回调）
+    ///
+    /// # 参数
+    /// - `updates`: (任务ID, 新延迟) 的元组列表
+    ///
+    /// # 返回
+    /// 成功推迟的任务数量
+    ///
+    /// # 示例
+    /// ```no_run
+    /// # use kestrel_protocol_timer::{TimerWheel, TimerService};
+    /// # use std::time::Duration;
+    /// # #[tokio::main]
+    /// # async fn main() {
+    /// let timer = TimerWheel::with_defaults();
+    /// let service = timer.create_service();
+    /// 
+    /// let callbacks: Vec<_> = (0..3)
+    ///     .map(|_| (Duration::from_secs(5), || async {}))
+    ///     .collect();
+    /// let tasks = TimerService::create_batch(callbacks);
+    /// let task_ids: Vec<_> = tasks.iter().map(|t| t.get_id()).collect();
+    /// service.register_batch(tasks).await;
+    /// 
+    /// // 批量推迟
+    /// let updates: Vec<_> = task_ids
+    ///     .into_iter()
+    ///     .map(|id| (id, Duration::from_secs(10)))
+    ///     .collect();
+    /// let postponed = service.postpone_batch(&updates).await;
+    /// println!("成功推迟 {} 个任务", postponed);
+    /// # }
+    /// ```
+    #[inline]
+    pub async fn postpone_batch(&self, updates: &[(TaskId, Duration)]) -> usize {
+        if updates.is_empty() {
+            return 0;
+        }
+
+        let updates_vec: Vec<_> = updates
+            .iter()
+            .map(|(task_id, delay)| (*task_id, *delay, None))
+            .collect();
+        let mut wheel = self.wheel.lock();
+        wheel.postpone_batch(updates_vec)
+    }
+
+    /// 批量推迟任务（替换回调）
+    ///
+    /// # 参数
+    /// - `updates`: (任务ID, 新延迟, 新回调) 的元组列表
+    ///
+    /// # 返回
+    /// 成功推迟的任务数量
+    ///
+    /// # 示例
+    /// ```no_run
+    /// # use kestrel_protocol_timer::{TimerWheel, TimerService};
+    /// # use std::time::Duration;
+    /// # #[tokio::main]
+    /// # async fn main() {
+    /// let timer = TimerWheel::with_defaults();
+    /// let service = timer.create_service();
+    /// 
+    /// let callbacks: Vec<_> = (0..3)
+    ///     .map(|_| (Duration::from_secs(5), || async {}))
+    ///     .collect();
+    /// let tasks = TimerService::create_batch(callbacks);
+    /// let task_ids: Vec<_> = tasks.iter().map(|t| t.get_id()).collect();
+    /// service.register_batch(tasks).await;
+    /// 
+    /// // 批量推迟并替换回调
+    /// let updates: Vec<_> = task_ids
+    ///     .into_iter()
+    ///     .enumerate()
+    ///     .map(|(i, id)| {
+    ///         (id, Duration::from_secs(10), move || async move {
+    ///             println!("New callback {}", i);
+    ///         })
+    ///     })
+    ///     .collect();
+    /// let postponed = service.postpone_batch_with_callbacks(updates).await;
+    /// println!("成功推迟 {} 个任务", postponed);
+    /// # }
+    /// ```
+    #[inline]
+    pub async fn postpone_batch_with_callbacks<C>(
+        &self,
+        updates: Vec<(TaskId, Duration, C)>,
+    ) -> usize
+    where
+        C: TimerCallback,
+    {
+        if updates.is_empty() {
+            return 0;
+        }
+
+        use std::sync::Arc;
+        let updates_vec: Vec<_> = updates
+            .into_iter()
+            .map(|(task_id, delay, callback)| {
+                let callback_wrapper = Arc::new(callback) as Arc<dyn TimerCallback>;
+                (task_id, delay, Some(callback_wrapper))
+            })
+            .collect();
+        let mut wheel = self.wheel.lock();
+        wheel.postpone_batch(updates_vec)
+    }
+
     /// 创建定时器任务（静态方法，申请阶段）
     /// 
     /// # 参数
@@ -863,6 +1072,271 @@ mod tests {
         let empty: Vec<TaskId> = vec![];
         let cancelled = service.cancel_batch(&empty).await;
         assert_eq!(cancelled, 0, "No tasks should be cancelled");
+    }
+
+    #[tokio::test]
+    async fn test_postpone_task() {
+        let timer = TimerWheel::with_defaults();
+        let mut service = timer.create_service();
+        let counter = Arc::new(AtomicU32::new(0));
+
+        // 注册一个任务，延迟 50ms
+        let counter_clone = Arc::clone(&counter);
+        let task = TimerService::create_task(
+            Duration::from_millis(50),
+            move || {
+                let counter = Arc::clone(&counter_clone);
+                async move {
+                    counter.fetch_add(1, Ordering::SeqCst);
+                }
+            },
+        );
+        let task_id = task.get_id();
+        service.register(task).await;
+
+        // 推迟任务到 150ms
+        let postponed = service.postpone_task(task_id, Duration::from_millis(150)).await;
+        assert!(postponed, "Task should be postponed successfully");
+
+        // 等待原定时间 50ms，任务不应该触发
+        tokio::time::sleep(Duration::from_millis(70)).await;
+        assert_eq!(counter.load(Ordering::SeqCst), 0);
+
+        // 接收超时通知（从推迟开始算，还需要等待约 150ms）
+        let mut rx = service.take_receiver().unwrap();
+        let received_task_id = tokio::time::timeout(Duration::from_millis(200), rx.recv())
+            .await
+            .expect("Should receive timeout notification")
+            .expect("Should receive Some value");
+
+        assert_eq!(received_task_id, task_id);
+        
+        // 等待回调执行
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        assert_eq!(counter.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn test_postpone_task_with_callback() {
+        let timer = TimerWheel::with_defaults();
+        let mut service = timer.create_service();
+        let counter = Arc::new(AtomicU32::new(0));
+
+        // 注册一个任务，原始回调增加 1
+        let counter_clone1 = Arc::clone(&counter);
+        let task = TimerService::create_task(
+            Duration::from_millis(50),
+            move || {
+                let counter = Arc::clone(&counter_clone1);
+                async move {
+                    counter.fetch_add(1, Ordering::SeqCst);
+                }
+            },
+        );
+        let task_id = task.get_id();
+        service.register(task).await;
+
+        // 推迟任务并替换回调，新回调增加 10
+        let counter_clone2 = Arc::clone(&counter);
+        let postponed = service.postpone_task_with_callback(
+            task_id,
+            Duration::from_millis(100),
+            move || {
+                let counter = Arc::clone(&counter_clone2);
+                async move {
+                    counter.fetch_add(10, Ordering::SeqCst);
+                }
+            }
+        ).await;
+        assert!(postponed, "Task should be postponed successfully");
+
+        // 接收超时通知（推迟后需要等待100ms，加上余量）
+        let mut rx = service.take_receiver().unwrap();
+        let received_task_id = tokio::time::timeout(Duration::from_millis(200), rx.recv())
+            .await
+            .expect("Should receive timeout notification")
+            .expect("Should receive Some value");
+
+        assert_eq!(received_task_id, task_id);
+        
+        // 等待回调执行
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        
+        // 验证新回调被执行（增加了 10 而不是 1）
+        assert_eq!(counter.load(Ordering::SeqCst), 10);
+    }
+
+    #[tokio::test]
+    async fn test_postpone_nonexistent_task() {
+        let timer = TimerWheel::with_defaults();
+        let service = timer.create_service();
+
+        // 尝试推迟一个不存在的任务
+        let fake_task = TimerService::create_task(Duration::from_millis(50), || async {});
+        let fake_task_id = fake_task.get_id();
+        // 不注册这个任务
+        
+        let postponed = service.postpone_task(fake_task_id, Duration::from_millis(100)).await;
+        assert!(!postponed, "Nonexistent task should not be postponed");
+    }
+
+    #[tokio::test]
+    async fn test_postpone_batch() {
+        let timer = TimerWheel::with_defaults();
+        let mut service = timer.create_service();
+        let counter = Arc::new(AtomicU32::new(0));
+
+        // 注册 3 个任务
+        let mut task_ids = Vec::new();
+        for _ in 0..3 {
+            let counter_clone = Arc::clone(&counter);
+            let task = TimerService::create_task(
+                Duration::from_millis(50),
+                move || {
+                    let counter = Arc::clone(&counter_clone);
+                    async move {
+                        counter.fetch_add(1, Ordering::SeqCst);
+                    }
+                },
+            );
+            task_ids.push((task.get_id(), Duration::from_millis(150)));
+            service.register(task).await;
+        }
+
+        // 批量推迟
+        let postponed = service.postpone_batch(&task_ids).await;
+        assert_eq!(postponed, 3, "All 3 tasks should be postponed");
+
+        // 等待原定时间 50ms，任务不应该触发
+        tokio::time::sleep(Duration::from_millis(70)).await;
+        assert_eq!(counter.load(Ordering::SeqCst), 0);
+
+        // 接收所有超时通知
+        let mut received_count = 0;
+        let mut rx = service.take_receiver().unwrap();
+        
+        while received_count < 3 {
+            match tokio::time::timeout(Duration::from_millis(200), rx.recv()).await {
+                Ok(Some(_task_id)) => {
+                    received_count += 1;
+                }
+                Ok(None) => break,
+                Err(_) => break,
+            }
+        }
+
+        assert_eq!(received_count, 3);
+        
+        // 等待回调执行
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        assert_eq!(counter.load(Ordering::SeqCst), 3);
+    }
+
+    #[tokio::test]
+    async fn test_postpone_batch_with_callbacks() {
+        let timer = TimerWheel::with_defaults();
+        let mut service = timer.create_service();
+        let counter = Arc::new(AtomicU32::new(0));
+
+        // 注册 3 个任务
+        let mut task_ids = Vec::new();
+        for _ in 0..3 {
+            let task = TimerService::create_task(
+                Duration::from_millis(50),
+                || async {},
+            );
+            task_ids.push(task.get_id());
+            service.register(task).await;
+        }
+
+        // 批量推迟并替换回调
+        let updates: Vec<_> = task_ids
+            .into_iter()
+            .map(|id| {
+                let counter_clone = Arc::clone(&counter);
+                (id, Duration::from_millis(150), move || {
+                    let counter = Arc::clone(&counter_clone);
+                    async move {
+                        counter.fetch_add(1, Ordering::SeqCst);
+                    }
+                })
+            })
+            .collect();
+
+        let postponed = service.postpone_batch_with_callbacks(updates).await;
+        assert_eq!(postponed, 3, "All 3 tasks should be postponed");
+
+        // 等待原定时间 50ms，任务不应该触发
+        tokio::time::sleep(Duration::from_millis(70)).await;
+        assert_eq!(counter.load(Ordering::SeqCst), 0);
+
+        // 接收所有超时通知
+        let mut received_count = 0;
+        let mut rx = service.take_receiver().unwrap();
+        
+        while received_count < 3 {
+            match tokio::time::timeout(Duration::from_millis(200), rx.recv()).await {
+                Ok(Some(_task_id)) => {
+                    received_count += 1;
+                }
+                Ok(None) => break,
+                Err(_) => break,
+            }
+        }
+
+        assert_eq!(received_count, 3);
+        
+        // 等待回调执行
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        assert_eq!(counter.load(Ordering::SeqCst), 3);
+    }
+
+    #[tokio::test]
+    async fn test_postpone_batch_empty() {
+        let timer = TimerWheel::with_defaults();
+        let service = timer.create_service();
+
+        // 推迟空列表
+        let empty: Vec<(TaskId, Duration)> = vec![];
+        let postponed = service.postpone_batch(&empty).await;
+        assert_eq!(postponed, 0, "No tasks should be postponed");
+    }
+
+    #[tokio::test]
+    async fn test_postpone_keeps_timeout_notification_valid() {
+        let timer = TimerWheel::with_defaults();
+        let mut service = timer.create_service();
+        let counter = Arc::new(AtomicU32::new(0));
+
+        // 注册一个任务
+        let counter_clone = Arc::clone(&counter);
+        let task = TimerService::create_task(
+            Duration::from_millis(50),
+            move || {
+                let counter = Arc::clone(&counter_clone);
+                async move {
+                    counter.fetch_add(1, Ordering::SeqCst);
+                }
+            },
+        );
+        let task_id = task.get_id();
+        service.register(task).await;
+
+        // 推迟任务
+        service.postpone_task(task_id, Duration::from_millis(100)).await;
+
+        // 验证超时通知仍然有效（推迟后需要等待100ms，加上余量）
+        let mut rx = service.take_receiver().unwrap();
+        let received_task_id = tokio::time::timeout(Duration::from_millis(200), rx.recv())
+            .await
+            .expect("Should receive timeout notification")
+            .expect("Should receive Some value");
+
+        assert_eq!(received_task_id, task_id, "Timeout notification should still work after postpone");
+        
+        // 等待回调执行
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        assert_eq!(counter.load(Ordering::SeqCst), 1);
     }
 }
 

@@ -427,12 +427,229 @@ fn bench_wheel_batch_multiple_slots(c: &mut Criterion) {
     group.finish();
 }
 
+/// 基准测试：单个任务推迟
+fn bench_wheel_postpone(c: &mut Criterion) {
+    let mut group = c.benchmark_group("wheel_postpone");
+    
+    group.bench_function("postpone_single", |b| {
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        
+        b.to_async(&runtime).iter_custom(|iters| async move {
+            let mut total_duration = Duration::from_secs(0);
+            
+            for _ in 0..iters {
+                // 准备阶段：创建 timer 和插入任务（不计入测量）
+                let timer = TimerWheel::with_defaults();
+                let task = TimerWheel::create_task(Duration::from_millis(100), || async {});
+                let task_id = task.get_id();
+                let _handle = timer.register(task);
+                
+                // 测量阶段：只测量推迟操作的性能
+                let start = std::time::Instant::now();
+                
+                let result = black_box(
+                    timer.postpone(task_id, Duration::from_millis(200))
+                );
+                
+                total_duration += start.elapsed();
+                black_box(result);
+            }
+            
+            total_duration
+        });
+    });
+    
+    group.finish();
+}
+
+/// 基准测试：批量任务推迟
+fn bench_wheel_postpone_batch(c: &mut Criterion) {
+    let mut group = c.benchmark_group("wheel_postpone_batch");
+    
+    for size in [10, 100, 1000].iter() {
+        group.bench_with_input(BenchmarkId::from_parameter(size), size, |b, &size| {
+            let runtime = tokio::runtime::Runtime::new().unwrap();
+            
+            b.to_async(&runtime).iter_custom(|iters| async move {
+                let mut total_duration = Duration::from_secs(0);
+                
+                for _ in 0..iters {
+                    // 准备阶段：创建 timer 和插入任务（不计入测量）
+                    let timer = TimerWheel::with_defaults();
+                    
+                    let callbacks: Vec<_> = (0..size)
+                        .map(|i| (Duration::from_millis(100 + i as u64 * 10), || async {}))
+                        .collect();
+                    let tasks = TimerWheel::create_batch(callbacks);
+                    let task_ids: Vec<_> = tasks.iter().map(|t| t.get_id()).collect();
+                    let _batch = timer.register_batch(tasks);
+                    
+                    // 准备推迟参数
+                    let postpone_updates: Vec<_> = task_ids
+                        .iter()
+                        .map(|&id| (id, Duration::from_millis(200)))
+                        .collect();
+                    
+                    // 测量阶段：只测量批量推迟的性能
+                    let start = std::time::Instant::now();
+                    
+                    let postponed = black_box(
+                        timer.postpone_batch(&postpone_updates)
+                    );
+                    
+                    total_duration += start.elapsed();
+                    black_box(postponed);
+                }
+                
+                total_duration
+            });
+        });
+    }
+    
+    group.finish();
+}
+
+/// 基准测试：推迟并替换回调
+fn bench_wheel_postpone_with_callback(c: &mut Criterion) {
+    let mut group = c.benchmark_group("wheel_postpone_with_callback");
+    
+    group.bench_function("postpone_single_with_callback", |b| {
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        
+        b.to_async(&runtime).iter_custom(|iters| async move {
+            let mut total_duration = Duration::from_secs(0);
+            
+            for _ in 0..iters {
+                // 准备阶段：创建 timer 和插入任务（不计入测量）
+                let timer = TimerWheel::with_defaults();
+                let task = TimerWheel::create_task(Duration::from_millis(100), || async {});
+                let task_id = task.get_id();
+                let _handle = timer.register(task);
+                
+                // 测量阶段：只测量推迟并替换回调的性能
+                let start = std::time::Instant::now();
+                
+                let result = black_box(
+                    timer.postpone_with_callback(
+                        task_id,
+                        Duration::from_millis(200),
+                        || async {}
+                    )
+                );
+                
+                total_duration += start.elapsed();
+                black_box(result);
+            }
+            
+            total_duration
+        });
+    });
+    
+    group.finish();
+}
+
+/// 基准测试：批量推迟并替换回调
+fn bench_wheel_postpone_batch_with_callbacks(c: &mut Criterion) {
+    let mut group = c.benchmark_group("wheel_postpone_batch_with_callbacks");
+    
+    for size in [10, 100, 1000].iter() {
+        group.bench_with_input(BenchmarkId::from_parameter(size), size, |b, &size| {
+            let runtime = tokio::runtime::Runtime::new().unwrap();
+            
+            b.to_async(&runtime).iter_custom(|iters| async move {
+                let mut total_duration = Duration::from_secs(0);
+                
+                for _ in 0..iters {
+                    // 准备阶段：创建 timer 和插入任务（不计入测量）
+                    let timer = TimerWheel::with_defaults();
+                    
+                    let callbacks: Vec<_> = (0..size)
+                        .map(|i| (Duration::from_millis(100 + i as u64 * 10), || async {}))
+                        .collect();
+                    let tasks = TimerWheel::create_batch(callbacks);
+                    let task_ids: Vec<_> = tasks.iter().map(|t| t.get_id()).collect();
+                    let _batch = timer.register_batch(tasks);
+                    
+                    // 准备推迟参数（包含新回调）
+                    let postpone_updates: Vec<_> = task_ids
+                        .into_iter()
+                        .map(|id| (id, Duration::from_millis(200), || async {}))
+                        .collect();
+                    
+                    // 测量阶段：只测量批量推迟并替换回调的性能
+                    let start = std::time::Instant::now();
+                    
+                    let postponed = black_box(
+                        timer.postpone_batch_with_callbacks(postpone_updates)
+                    );
+                    
+                    total_duration += start.elapsed();
+                    black_box(postponed);
+                }
+                
+                total_duration
+            });
+        });
+    }
+    
+    group.finish();
+}
+
+/// 基准测试：同槽位批量推迟性能
+fn bench_wheel_postpone_batch_same_slot(c: &mut Criterion) {
+    let mut group = c.benchmark_group("wheel_postpone_batch_same_slot");
+    
+    for size in [10, 100, 1000].iter() {
+        group.bench_with_input(BenchmarkId::from_parameter(size), size, |b, &size| {
+            let runtime = tokio::runtime::Runtime::new().unwrap();
+            
+            b.to_async(&runtime).iter_custom(|iters| async move {
+                let mut total_duration = Duration::from_secs(0);
+                
+                for _ in 0..iters {
+                    // 准备阶段：创建 timer 和插入相同延迟的任务（会进入同一槽位）
+                    let timer = TimerWheel::with_defaults();
+                    
+                    let callbacks: Vec<_> = (0..size)
+                        .map(|_| (Duration::from_millis(100), || async {}))
+                        .collect();
+                    let tasks = TimerWheel::create_batch(callbacks);
+                    let task_ids: Vec<_> = tasks.iter().map(|t| t.get_id()).collect();
+                    let _batch = timer.register_batch(tasks);
+                    
+                    // 准备推迟参数（同样推迟到同一槽位）
+                    let postpone_updates: Vec<_> = task_ids
+                        .iter()
+                        .map(|&id| (id, Duration::from_millis(200)))
+                        .collect();
+                    
+                    // 测量阶段：只测量批量推迟的性能
+                    let start = std::time::Instant::now();
+                    
+                    let postponed = black_box(
+                        timer.postpone_batch(&postpone_updates)
+                    );
+                    
+                    total_duration += start.elapsed();
+                    black_box(postponed);
+                }
+                
+                total_duration
+            });
+        });
+    }
+    
+    group.finish();
+}
+
 criterion_group!(
     benches,
     bench_wheel_insert,
     bench_wheel_insert_batch,
     bench_wheel_cancel,
     bench_wheel_cancel_batch,
+    bench_wheel_postpone,
+    bench_wheel_postpone_batch,
     bench_wheel_cancel_batch_same_slot,
     bench_wheel_advance_empty,
     bench_wheel_advance_with_tasks,
@@ -440,6 +657,9 @@ criterion_group!(
     bench_wheel_mixed_operations,
     bench_wheel_cancel_small_batch,
     bench_wheel_batch_multiple_slots,
+    bench_wheel_postpone_with_callback,
+    bench_wheel_postpone_batch_with_callbacks,
+    bench_wheel_postpone_batch_same_slot,
 );
 
 criterion_main!(benches);
