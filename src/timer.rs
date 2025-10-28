@@ -331,8 +331,10 @@ impl TimerWheel {
     /// #[tokio::main]
     /// async fn main() {
     ///     let config = WheelConfig::builder()
-    ///         .tick_duration(Duration::from_millis(10))
-    ///         .slot_count(512)
+    ///         .l0_tick_duration(Duration::from_millis(10))
+    ///         .l0_slot_count(512)
+    ///         .l1_tick_duration(Duration::from_secs(1))
+    ///         .l1_slot_count(64)
     ///         .build()
     ///         .unwrap();
     ///     let timer = TimerWheel::new(config, BatchConfig::default());
@@ -343,7 +345,7 @@ impl TimerWheel {
     /// }
     /// ```
     pub fn new(config: WheelConfig, batch_config: BatchConfig) -> Self {
-        let tick_duration = config.tick_duration;
+        let tick_duration = config.hierarchical.l0_tick_duration;
         let wheel = Wheel::new(config, batch_config);
         let wheel = Arc::new(Mutex::new(wheel));
         let wheel_clone = wheel.clone();
@@ -359,9 +361,9 @@ impl TimerWheel {
         }
     }
 
-    /// 创建带默认配置的定时器管理器
-    /// - tick 时长: 10ms
-    /// - 槽位数量: 512
+    /// 创建带默认配置的定时器管理器（分层模式）
+    /// - L0 层 tick 时长: 10ms, 槽位数量: 512
+    /// - L1 层 tick 时长: 1s, 槽位数量: 64
     ///
     /// # 示例
     /// ```no_run

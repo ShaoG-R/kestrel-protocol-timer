@@ -209,17 +209,21 @@ impl TimerTask {
     }
 }
 
-/// 任务位置信息，用于取消操作
+/// 任务位置信息（包含层级），用于分层时间轮
 #[derive(Debug, Clone)]
-pub struct TaskLocation {
+pub(crate) struct TaskLocation {
+    /// 层级：0 = L0（底层），1 = L1（高层）
+    pub level: u8,
+    /// 槽位索引
     pub slot_index: usize,
     /// 任务在槽位 Vec 中的索引位置（用于 O(1) 取消）
     pub vec_index: usize,
 }
 
 impl TaskLocation {
-    pub fn new(slot_index: usize, vec_index: usize) -> Self {
+    pub fn new(level: u8, slot_index: usize, vec_index: usize) -> Self {
         Self {
+            level,
             slot_index,
             vec_index,
         }

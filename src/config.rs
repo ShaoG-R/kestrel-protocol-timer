@@ -5,38 +5,77 @@
 use crate::error::TimerError;
 use std::time::Duration;
 
+/// 分层时间轮配置
+///
+/// 用于配置2层时间轮的参数。L0 层处理短延迟任务，L1 层处理长延迟任务。
+///
+/// # 示例
+/// ```no_run
+/// use kestrel_protocol_timer::HierarchicalWheelConfig;
+/// use std::time::Duration;
+///
+/// let config = HierarchicalWheelConfig {
+///     l0_tick_duration: Duration::from_millis(10),
+///     l0_slot_count: 512,
+///     l1_tick_duration: Duration::from_secs(1),
+///     l1_slot_count: 60,
+/// };
+/// ```
+#[derive(Debug, Clone)]
+pub struct HierarchicalWheelConfig {
+    /// L0 层（底层）每个 tick 的时间长度
+    pub l0_tick_duration: Duration,
+    /// L0 层槽位数量（必须是 2 的幂次方）
+    pub l0_slot_count: usize,
+    
+    /// L1 层（高层）每个 tick 的时间长度
+    pub l1_tick_duration: Duration,
+    /// L1 层槽位数量（必须是 2 的幂次方）
+    pub l1_slot_count: usize,
+}
+
+impl Default for HierarchicalWheelConfig {
+    fn default() -> Self {
+        Self {
+            l0_tick_duration: Duration::from_millis(10),
+            l0_slot_count: 512,
+            l1_tick_duration: Duration::from_secs(1),
+            l1_slot_count: 64,
+        }
+    }
+}
+
 /// 时间轮配置
 ///
-/// 用于配置时间轮的基本参数，包括 tick 时长和槽位数量。
+/// 用于配置分层时间轮的参数。系统仅支持分层模式。
 ///
 /// # 示例
 /// ```no_run
 /// use kestrel_protocol_timer::WheelConfig;
 /// use std::time::Duration;
 ///
-/// // 使用默认配置
+/// // 使用默认配置（分层模式）
 /// let config = WheelConfig::default();
 ///
 /// // 使用 Builder 自定义配置
 /// let config = WheelConfig::builder()
-///     .tick_duration(Duration::from_millis(20))
-///     .slot_count(1024)
+///     .l0_tick_duration(Duration::from_millis(20))
+///     .l0_slot_count(1024)
+///     .l1_tick_duration(Duration::from_secs(2))
+///     .l1_slot_count(128)
 ///     .build()
 ///     .unwrap();
 /// ```
 #[derive(Debug, Clone)]
 pub struct WheelConfig {
-    /// 每个 tick 的时间长度
-    pub tick_duration: Duration,
-    /// 槽位数量（必须是 2 的幂次方）
-    pub slot_count: usize,
+    /// 分层时间轮配置
+    pub hierarchical: HierarchicalWheelConfig,
 }
 
 impl Default for WheelConfig {
     fn default() -> Self {
         Self {
-            tick_duration: Duration::from_millis(10),
-            slot_count: 512,
+            hierarchical: HierarchicalWheelConfig::default(),
         }
     }
 }
@@ -51,30 +90,39 @@ impl WheelConfig {
 /// 时间轮配置构建器
 #[derive(Debug, Clone)]
 pub struct WheelConfigBuilder {
-    tick_duration: Duration,
-    slot_count: usize,
+    hierarchical: HierarchicalWheelConfig,
 }
 
 impl Default for WheelConfigBuilder {
     fn default() -> Self {
-        let config = WheelConfig::default();
         Self {
-            tick_duration: config.tick_duration,
-            slot_count: config.slot_count,
+            hierarchical: HierarchicalWheelConfig::default(),
         }
     }
 }
 
 impl WheelConfigBuilder {
-    /// 设置 tick 时长
-    pub fn tick_duration(mut self, duration: Duration) -> Self {
-        self.tick_duration = duration;
+    /// 设置 L0 层 tick 时长
+    pub fn l0_tick_duration(mut self, duration: Duration) -> Self {
+        self.hierarchical.l0_tick_duration = duration;
         self
     }
 
-    /// 设置槽位数量
-    pub fn slot_count(mut self, count: usize) -> Self {
-        self.slot_count = count;
+    /// 设置 L0 层槽位数量
+    pub fn l0_slot_count(mut self, count: usize) -> Self {
+        self.hierarchical.l0_slot_count = count;
+        self
+    }
+
+    /// 设置 L1 层 tick 时长
+    pub fn l1_tick_duration(mut self, duration: Duration) -> Self {
+        self.hierarchical.l1_tick_duration = duration;
+        self
+    }
+
+    /// 设置 L1 层槽位数量
+    pub fn l1_slot_count(mut self, count: usize) -> Self {
+        self.hierarchical.l1_slot_count = count;
         self
     }
 
@@ -85,35 +133,73 @@ impl WheelConfigBuilder {
     /// - `Err(TimerError)`: 配置验证失败
     ///
     /// # 验证规则
-    /// - tick_duration 必须大于 0
-    /// - slot_count 必须大于 0 且是 2 的幂次方
+    /// - L0 tick 时长必须大于 0
+    /// - L1 tick 时长必须大于 0
+    /// - L0 槽位数量必须大于 0 且是 2 的幂次方
+    /// - L1 槽位数量必须大于 0 且是 2 的幂次方
+    /// - L1 tick 必须是 L0 tick 的整数倍
     pub fn build(self) -> Result<WheelConfig, TimerError> {
-        // 验证 tick_duration
-        if self.tick_duration.is_zero() {
+        let h = &self.hierarchical;
+        
+        // 验证 L0 层配置
+        if h.l0_tick_duration.is_zero() {
             return Err(TimerError::InvalidConfiguration {
-                field: "tick_duration".to_string(),
-                reason: "tick 时长必须大于 0".to_string(),
+                field: "l0_tick_duration".to_string(),
+                reason: "L0 层 tick 时长必须大于 0".to_string(),
             });
         }
 
-        // 验证 slot_count
-        if self.slot_count == 0 {
+        if h.l0_slot_count == 0 {
             return Err(TimerError::InvalidSlotCount {
-                slot_count: self.slot_count,
-                reason: "槽位数量必须大于 0",
+                slot_count: h.l0_slot_count,
+                reason: "L0 层槽位数量必须大于 0",
             });
         }
 
-        if !self.slot_count.is_power_of_two() {
+        if !h.l0_slot_count.is_power_of_two() {
             return Err(TimerError::InvalidSlotCount {
-                slot_count: self.slot_count,
-                reason: "槽位数量必须是 2 的幂次方",
+                slot_count: h.l0_slot_count,
+                reason: "L0 层槽位数量必须是 2 的幂次方",
+            });
+        }
+
+        // 验证 L1 层配置
+        if h.l1_tick_duration.is_zero() {
+            return Err(TimerError::InvalidConfiguration {
+                field: "l1_tick_duration".to_string(),
+                reason: "L1 层 tick 时长必须大于 0".to_string(),
+            });
+        }
+
+        if h.l1_slot_count == 0 {
+            return Err(TimerError::InvalidSlotCount {
+                slot_count: h.l1_slot_count,
+                reason: "L1 层槽位数量必须大于 0",
+            });
+        }
+
+        if !h.l1_slot_count.is_power_of_two() {
+            return Err(TimerError::InvalidSlotCount {
+                slot_count: h.l1_slot_count,
+                reason: "L1 层槽位数量必须是 2 的幂次方",
+            });
+        }
+
+        // 验证 L1 tick 是 L0 tick 的整数倍
+        let l0_ms = h.l0_tick_duration.as_millis() as u64;
+        let l1_ms = h.l1_tick_duration.as_millis() as u64;
+        if l1_ms % l0_ms != 0 {
+            return Err(TimerError::InvalidConfiguration {
+                field: "l1_tick_duration".to_string(),
+                reason: format!(
+                    "L1 tick 时长 ({} ms) 必须是 L0 tick 时长 ({} ms) 的整数倍",
+                    l1_ms, l0_ms
+                ),
             });
         }
 
         Ok(WheelConfig {
-            tick_duration: self.tick_duration,
-            slot_count: self.slot_count,
+            hierarchical: self.hierarchical,
         })
     }
 }
@@ -263,11 +349,10 @@ impl Default for BatchConfig {
 /// // 使用默认配置
 /// let config = TimerConfig::default();
 ///
-/// // 使用 Builder 自定义配置
+/// // 使用 Builder 自定义配置（仅配置服务参数）
 /// let config = TimerConfig::builder()
-///     .tick_duration(std::time::Duration::from_millis(20))
-///     .slot_count(1024)
 ///     .command_channel_capacity(1024)
+///     .timeout_channel_capacity(2000)
 ///     .build()
 ///     .unwrap();
 /// ```
@@ -317,18 +402,6 @@ impl Default for TimerConfigBuilder {
 }
 
 impl TimerConfigBuilder {
-    /// 设置 tick 时长
-    pub fn tick_duration(mut self, duration: Duration) -> Self {
-        self.wheel_builder = self.wheel_builder.tick_duration(duration);
-        self
-    }
-
-    /// 设置槽位数量
-    pub fn slot_count(mut self, count: usize) -> Self {
-        self.wheel_builder = self.wheel_builder.slot_count(count);
-        self
-    }
-
     /// 设置命令通道容量
     pub fn command_channel_capacity(mut self, capacity: usize) -> Self {
         self.service_builder = self.service_builder.command_channel_capacity(capacity);
@@ -368,26 +441,32 @@ mod tests {
     #[test]
     fn test_wheel_config_default() {
         let config = WheelConfig::default();
-        assert_eq!(config.tick_duration, Duration::from_millis(10));
-        assert_eq!(config.slot_count, 512);
+        assert_eq!(config.hierarchical.l0_tick_duration, Duration::from_millis(10));
+        assert_eq!(config.hierarchical.l0_slot_count, 512);
+        assert_eq!(config.hierarchical.l1_tick_duration, Duration::from_secs(1));
+        assert_eq!(config.hierarchical.l1_slot_count, 64);
     }
 
     #[test]
     fn test_wheel_config_builder() {
         let config = WheelConfig::builder()
-            .tick_duration(Duration::from_millis(20))
-            .slot_count(1024)
+            .l0_tick_duration(Duration::from_millis(20))
+            .l0_slot_count(1024)
+            .l1_tick_duration(Duration::from_secs(2))
+            .l1_slot_count(128)
             .build()
             .unwrap();
 
-        assert_eq!(config.tick_duration, Duration::from_millis(20));
-        assert_eq!(config.slot_count, 1024);
+        assert_eq!(config.hierarchical.l0_tick_duration, Duration::from_millis(20));
+        assert_eq!(config.hierarchical.l0_slot_count, 1024);
+        assert_eq!(config.hierarchical.l1_tick_duration, Duration::from_secs(2));
+        assert_eq!(config.hierarchical.l1_slot_count, 128);
     }
 
     #[test]
     fn test_wheel_config_validation_zero_tick() {
         let result = WheelConfig::builder()
-            .tick_duration(Duration::ZERO)
+            .l0_tick_duration(Duration::ZERO)
             .build();
 
         assert!(result.is_err());
@@ -396,7 +475,7 @@ mod tests {
     #[test]
     fn test_wheel_config_validation_invalid_slot_count() {
         let result = WheelConfig::builder()
-            .slot_count(100)
+            .l0_slot_count(100)
             .build();
 
         assert!(result.is_err());
@@ -430,7 +509,7 @@ mod tests {
     #[test]
     fn test_timer_config_default() {
         let config = TimerConfig::default();
-        assert_eq!(config.wheel.slot_count, 512);
+        assert_eq!(config.wheel.hierarchical.l0_slot_count, 512);
         assert_eq!(config.service.command_channel_capacity, 512);
         assert_eq!(config.batch.small_batch_threshold, 10);
     }
@@ -438,16 +517,12 @@ mod tests {
     #[test]
     fn test_timer_config_builder() {
         let config = TimerConfig::builder()
-            .tick_duration(Duration::from_millis(20))
-            .slot_count(1024)
             .command_channel_capacity(1024)
             .timeout_channel_capacity(2000)
             .small_batch_threshold(20)
             .build()
             .unwrap();
 
-        assert_eq!(config.wheel.tick_duration, Duration::from_millis(20));
-        assert_eq!(config.wheel.slot_count, 1024);
         assert_eq!(config.service.command_channel_capacity, 1024);
         assert_eq!(config.service.timeout_channel_capacity, 2000);
         assert_eq!(config.batch.small_batch_threshold, 20);
