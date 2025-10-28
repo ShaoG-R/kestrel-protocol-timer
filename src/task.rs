@@ -191,6 +191,10 @@ impl TimerTask {
     }
 
     /// 内部方法：准备注册（在注册时由时间轮调用）
+    /// 
+    /// 注意：此方法已内联到 insert/insert_batch 中以提升性能，
+    /// 但保留此方法以供未来可能的其他用途
+    #[allow(dead_code)]
     pub(crate) fn prepare_for_registration(
         &mut self,
         completion_notifier: CompletionNotifier,
@@ -210,22 +214,26 @@ impl TimerTask {
 }
 
 /// 任务位置信息（包含层级），用于分层时间轮
-#[derive(Debug, Clone)]
+/// 
+/// 优化内存布局：将 level 字段放在最前，利用结构体对齐减少填充
+#[derive(Debug, Clone, Copy)]
 pub(crate) struct TaskLocation {
-    /// 层级：0 = L0（底层），1 = L1（高层）
-    pub level: u8,
     /// 槽位索引
     pub slot_index: usize,
     /// 任务在槽位 Vec 中的索引位置（用于 O(1) 取消）
     pub vec_index: usize,
+    /// 层级：0 = L0（底层），1 = L1（高层）
+    /// 使用 u8 而非 bool，为未来可能的多层扩展预留空间
+    pub level: u8,
 }
 
 impl TaskLocation {
+    #[inline(always)]
     pub fn new(level: u8, slot_index: usize, vec_index: usize) -> Self {
         Self {
-            level,
             slot_index,
             vec_index,
+            level,
         }
     }
 }

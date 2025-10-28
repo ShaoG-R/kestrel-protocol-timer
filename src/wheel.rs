@@ -117,27 +117,28 @@ impl Wheel {
     /// - 层级：0 = L0, 1 = L1
     /// - tick数：从当前 tick 开始计算的 tick 数
     /// - rounds：轮次（仅在 L1 层超长延迟时使用）
+    #[inline(always)]
     fn determine_layer(&self, delay: Duration) -> (u8, u64, u32) {
-        let l0_ticks = self.l0.delay_to_ticks(delay);
-        let l0_capacity_ms = (self.l0.slot_count as u64) * (self.l0.tick_duration.as_millis() as u64);
         let delay_ms = delay.as_millis() as u64;
+        let l0_capacity_ms = (self.l0.slot_count as u64) * (self.l0.tick_duration.as_millis() as u64);
         
+        // 快速路径：大多数任务在 L0 范围内
         if delay_ms < l0_capacity_ms {
-            // 延迟在 L0 范围内，插入 L0 层（无 rounds）
-            (0, l0_ticks, 0)
+            let l0_ticks = delay_ms / self.l0.tick_duration.as_millis() as u64;
+            let l0_ticks = l0_ticks.max(1); // 至少 1 个 tick
+            return (0, l0_ticks, 0);
+        }
+        
+        // 慢速路径：L1 层任务
+        let l1_ticks = delay_ms / self.l1.tick_duration.as_millis() as u64;
+        let l1_ticks = l1_ticks.max(1);
+        let l1_capacity = self.l1.slot_count as u64;
+        
+        if l1_ticks < l1_capacity {
+            (1, l1_ticks, 0)
         } else {
-            // 延迟超出 L0 范围，插入 L1 层
-            let l1_ticks = self.l1.delay_to_ticks(delay);
-            let l1_capacity = self.l1.slot_count as u64;
-            
-            if l1_ticks < l1_capacity {
-                // 在 L1 一圈内（无 rounds）
-                (1, l1_ticks, 0)
-            } else {
-                // 超出 L1 一圈，需要 rounds
-                let rounds = (l1_ticks / l1_capacity) as u32;
-                (1, l1_ticks, rounds)
-            }
+            let rounds = (l1_ticks / l1_capacity) as u32;
+            (1, l1_ticks, rounds)
         }
     }
 
@@ -159,10 +160,10 @@ impl Wheel {
     pub fn insert(&mut self, mut task: TimerTask, notifier: crate::task::CompletionNotifier) -> TaskId {
         let (level, ticks, rounds) = self.determine_layer(task.delay);
         
-        let (current_tick, slot_count, slots) = if level == 0 {
-            (self.l0.current_tick, self.l0.slot_count, &mut self.l0.slots)
-        } else {
-            (self.l1.current_tick, self.l1.slot_count, &mut self.l1.slots)
+        // 使用 match 减少分支
+        let (current_tick, slot_count, slots) = match level {
+            0 => (self.l0.current_tick, self.l0.slot_count, &mut self.l0.slots),
+            _ => (self.l1.current_tick, self.l1.slot_count, &mut self.l1.slots),
         };
         
         let total_ticks = current_tick + ticks;
@@ -209,10 +210,10 @@ impl Wheel {
         for (mut task, notifier) in tasks {
             let (level, ticks, rounds) = self.determine_layer(task.delay);
             
-            let (current_tick, slot_count, slots) = if level == 0 {
-                (self.l0.current_tick, self.l0.slot_count, &mut self.l0.slots)
-            } else {
-                (self.l1.current_tick, self.l1.slot_count, &mut self.l1.slots)
+            // 使用 match 减少分支
+            let (current_tick, slot_count, slots) = match level {
+                0 => (self.l0.current_tick, self.l0.slot_count, &mut self.l0.slots),
+                _ => (self.l1.current_tick, self.l1.slot_count, &mut self.l1.slots),
             };
             
             let total_ticks = current_tick + ticks;
@@ -248,36 +249,45 @@ impl Wheel {
     /// 如果任务存在且成功取消返回 true，否则返回 false
     #[inline]
     pub fn cancel(&mut self, task_id: TaskId) -> bool {
-        if let Some(location) = self.task_index.remove(&task_id) {
-            // 根据层级获取对应的槽位
-            let slot = if location.level == 0 {
-                &mut self.l0.slots[location.slot_index]
-            } else {
-                &mut self.l1.slots[location.slot_index]
-            };
-            
-            // 使用 vec_index 直接访问，O(1) 复杂度
-            if location.vec_index < slot.len() && slot[location.vec_index].id == task_id {
-                // 先取出 notifier 并发送取消通知
-                if let Some(notifier) = slot[location.vec_index].completion_notifier.take() {
-                    let _ = notifier.0.send(TaskCompletionReason::Cancelled);
-                }
-                
-                // 使用 swap_remove 移除任务
-                slot.swap_remove(location.vec_index);
-                
-                // 如果被交换的元素不是最后一个，需要更新被交换元素的索引
-                if location.vec_index < slot.len() {
-                    let swapped_task_id = slot[location.vec_index].id;
-                    if let Some(swapped_location) = self.task_index.get_mut(&swapped_task_id) {
-                        swapped_location.vec_index = location.vec_index;
-                    }
-                }
-                
-                return true;
+        // 从索引中移除任务位置
+        let location = match self.task_index.remove(&task_id) {
+            Some(loc) => loc,
+            None => return false,
+        };
+        
+        // 使用 match 获取槽位引用，减少分支
+        let slot = match location.level {
+            0 => &mut self.l0.slots[location.slot_index],
+            _ => &mut self.l1.slots[location.slot_index],
+        };
+        
+        // 边界检查和 ID 验证
+        if location.vec_index >= slot.len() || slot[location.vec_index].id != task_id {
+            // 索引不一致，重新插入 location 以保持数据一致性
+            self.task_index.insert(task_id, location);
+            return false;
+        }
+        
+        // 发送取消通知
+        if let Some(notifier) = slot[location.vec_index].completion_notifier.take() {
+            let _ = notifier.0.send(TaskCompletionReason::Cancelled);
+        }
+        
+        // 使用 swap_remove 移除任务，记录被交换的任务 ID
+        let removed_task = slot.swap_remove(location.vec_index);
+        
+        // 如果发生了交换（vec_index 不是最后一个元素）
+        if location.vec_index < slot.len() {
+            let swapped_task_id = slot[location.vec_index].id;
+            // 一次性更新被交换元素的索引，避免再次 HashMap 查询
+            if let Some(swapped_location) = self.task_index.get_mut(&swapped_task_id) {
+                swapped_location.vec_index = location.vec_index;
             }
         }
-        false
+        
+        // 确保移除的是正确的任务
+        debug_assert_eq!(removed_task.id, task_id);
+        true
     }
 
     /// 批量取消定时器任务
@@ -545,60 +555,65 @@ impl Wheel {
         new_callback: Option<crate::task::CallbackWrapper>,
     ) -> bool {
         // 步骤1: 查找并移除原任务
-        if let Some(old_location) = self.task_index.remove(&task_id) {
-            // 根据原层级获取对应的槽位
-            let slot = if old_location.level == 0 {
-                &mut self.l0.slots[old_location.slot_index]
-            } else {
-                &mut self.l1.slots[old_location.slot_index]
-            };
-            
-            // 验证任务仍在预期位置
-            if old_location.vec_index < slot.len() && slot[old_location.vec_index].id == task_id {
-                // 使用 swap_remove 移除任务
-                let mut task = slot.swap_remove(old_location.vec_index);
-                
-                // 更新被交换元素的索引（如果发生了交换）
-                if old_location.vec_index < slot.len() {
-                    let swapped_task_id = slot[old_location.vec_index].id;
-                    if let Some(swapped_location) = self.task_index.get_mut(&swapped_task_id) {
-                        swapped_location.vec_index = old_location.vec_index;
-                    }
-                }
-                
-                // 步骤2: 更新任务的延迟和回调
-                task.delay = new_delay;
-                if let Some(callback) = new_callback {
-                    task.callback = Some(callback);
-                }
-                
-                // 步骤3: 根据新延迟重新计算层级、槽位和轮次
-                let (new_level, ticks, new_rounds) = self.determine_layer(new_delay);
-                
-                let (current_tick, slot_count, slots) = if new_level == 0 {
-                    (self.l0.current_tick, self.l0.slot_count, &mut self.l0.slots)
-                } else {
-                    (self.l1.current_tick, self.l1.slot_count, &mut self.l1.slots)
-                };
-                
-                let total_ticks = current_tick + ticks;
-                let new_slot_index = (total_ticks as usize) & (slot_count - 1);
-                
-                // 更新任务的时间轮参数
-                task.deadline_tick = total_ticks;
-                task.rounds = new_rounds;
-                
-                // 步骤4: 重新插入任务到新层级/槽位
-                let new_vec_index = slots[new_slot_index].len();
-                let new_location = TaskLocation::new(new_level, new_slot_index, new_vec_index);
-                
-                slots[new_slot_index].push(task);
-                self.task_index.insert(task_id, new_location);
-                
-                return true;
+        let old_location = match self.task_index.remove(&task_id) {
+            Some(loc) => loc,
+            None => return false,
+        };
+        
+        // 使用 match 获取槽位引用
+        let slot = match old_location.level {
+            0 => &mut self.l0.slots[old_location.slot_index],
+            _ => &mut self.l1.slots[old_location.slot_index],
+        };
+        
+        // 验证任务仍在预期位置
+        if old_location.vec_index >= slot.len() || slot[old_location.vec_index].id != task_id {
+            // 索引不一致，重新插入并返回失败
+            self.task_index.insert(task_id, old_location);
+            return false;
+        }
+        
+        // 使用 swap_remove 移除任务
+        let mut task = slot.swap_remove(old_location.vec_index);
+        
+        // 更新被交换元素的索引（如果发生了交换）
+        if old_location.vec_index < slot.len() {
+            let swapped_task_id = slot[old_location.vec_index].id;
+            if let Some(swapped_location) = self.task_index.get_mut(&swapped_task_id) {
+                swapped_location.vec_index = old_location.vec_index;
             }
         }
-        false
+        
+        // 步骤2: 更新任务的延迟和回调
+        task.delay = new_delay;
+        if let Some(callback) = new_callback {
+            task.callback = Some(callback);
+        }
+        
+        // 步骤3: 根据新延迟重新计算层级、槽位和轮次
+        let (new_level, ticks, new_rounds) = self.determine_layer(new_delay);
+        
+        // 使用 match 减少分支
+        let (current_tick, slot_count, slots) = match new_level {
+            0 => (self.l0.current_tick, self.l0.slot_count, &mut self.l0.slots),
+            _ => (self.l1.current_tick, self.l1.slot_count, &mut self.l1.slots),
+        };
+        
+        let total_ticks = current_tick + ticks;
+        let new_slot_index = (total_ticks as usize) & (slot_count - 1);
+        
+        // 更新任务的时间轮参数
+        task.deadline_tick = total_ticks;
+        task.rounds = new_rounds;
+        
+        // 步骤4: 重新插入任务到新层级/槽位
+        let new_vec_index = slots[new_slot_index].len();
+        let new_location = TaskLocation::new(new_level, new_slot_index, new_vec_index);
+        
+        slots[new_slot_index].push(task);
+        self.task_index.insert(task_id, new_location);
+        
+        true
     }
 
     /// 批量推迟定时器任务
