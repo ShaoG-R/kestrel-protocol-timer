@@ -213,14 +213,17 @@ impl TimerTask {
 #[derive(Debug, Clone)]
 pub struct TaskLocation {
     pub slot_index: usize,
+    /// 任务的轮次（用于定位分组）
+    pub rounds: u32,
     /// 任务在槽位 Vec 中的索引位置（用于 O(1) 取消）
     pub vec_index: usize,
 }
 
 impl TaskLocation {
-    pub fn new(slot_index: usize, vec_index: usize) -> Self {
+    pub fn new(slot_index: usize, rounds: u32, vec_index: usize) -> Self {
         Self {
             slot_index,
+            rounds,
             vec_index,
         }
     }

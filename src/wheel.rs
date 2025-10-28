@@ -6,8 +6,9 @@ use smallvec::SmallVec;
 
 /// 时间轮数据结构
 pub struct Wheel {
-    /// 槽位数组，每个槽位存储一组定时器任务
-    slots: Vec<Vec<TimerTask>>,
+    /// 槽位数组，每个槽位按轮次分组存储定时器任务
+    /// Key: rounds (轮次), Value: 该轮次的任务列表
+    slots: Vec<FxHashMap<u32, Vec<TimerTask>>>,
     
     /// 当前时间指针（tick 索引）
     current_tick: u64,
@@ -39,7 +40,7 @@ impl Wheel {
         let slot_count = config.slot_count;
         let mut slots = Vec::with_capacity(slot_count);
         for _ in 0..slot_count {
-            slots.push(Vec::new());
+            slots.push(FxHashMap::default());
         }
 
         Self {
@@ -107,12 +108,15 @@ impl Wheel {
 
         let task_id = task.id;
         
+        // 获取或创建该轮次的任务列表
+        let tasks_for_rounds = self.slots[slot_index].entry(rounds).or_insert_with(Vec::new);
+        
         // 获取任务在 Vec 中的索引位置（插入前的长度就是新任务的索引）
-        let vec_index = self.slots[slot_index].len();
-        let location = TaskLocation::new(slot_index, vec_index);
+        let vec_index = tasks_for_rounds.len();
+        let location = TaskLocation::new(slot_index, rounds, vec_index);
 
-        // 插入任务到槽位
-        self.slots[slot_index].push(task);
+        // 插入任务到槽位的对应轮次分组
+        tasks_for_rounds.push(task);
         
         // 记录任务位置
         self.task_index.insert(task_id, location);
@@ -154,12 +158,15 @@ impl Wheel {
 
             let task_id = task.id;
             
+            // 获取或创建该轮次的任务列表
+            let tasks_for_rounds = self.slots[slot_index].entry(rounds).or_insert_with(Vec::new);
+            
             // 获取任务在 Vec 中的索引位置
-            let vec_index = self.slots[slot_index].len();
-            let location = TaskLocation::new(slot_index, vec_index);
+            let vec_index = tasks_for_rounds.len();
+            let location = TaskLocation::new(slot_index, rounds, vec_index);
 
-            // 插入任务到槽位
-            self.slots[slot_index].push(task);
+            // 插入任务到槽位的对应轮次分组
+            tasks_for_rounds.push(task);
             
             // 记录任务位置
             self.task_index.insert(task_id, location);
@@ -182,25 +189,33 @@ impl Wheel {
         if let Some(location) = self.task_index.remove(&task_id) {
             let slot = &mut self.slots[location.slot_index];
             
-            // 使用 vec_index 直接访问，O(1) 复杂度
-            if location.vec_index < slot.len() && slot[location.vec_index].id == task_id {
-                // 先取出 notifier 并发送取消通知
-                if let Some(notifier) = slot[location.vec_index].completion_notifier.take() {
-                    let _ = notifier.0.send(TaskCompletionReason::Cancelled);
-                }
-                
-                // 使用 swap_remove 移除任务
-                slot.swap_remove(location.vec_index);
-                
-                // 如果被交换的元素不是最后一个，需要更新被交换元素的索引
-                if location.vec_index < slot.len() {
-                    let swapped_task_id = slot[location.vec_index].id;
-                    if let Some(swapped_location) = self.task_index.get_mut(&swapped_task_id) {
-                        swapped_location.vec_index = location.vec_index;
+            // 获取对应轮次的任务列表
+            if let Some(tasks_for_rounds) = slot.get_mut(&location.rounds) {
+                // 使用 vec_index 直接访问，O(1) 复杂度
+                if location.vec_index < tasks_for_rounds.len() && tasks_for_rounds[location.vec_index].id == task_id {
+                    // 先取出 notifier 并发送取消通知
+                    if let Some(notifier) = tasks_for_rounds[location.vec_index].completion_notifier.take() {
+                        let _ = notifier.0.send(TaskCompletionReason::Cancelled);
                     }
+                    
+                    // 使用 swap_remove 移除任务
+                    tasks_for_rounds.swap_remove(location.vec_index);
+                    
+                    // 如果被交换的元素不是最后一个，需要更新被交换元素的索引
+                    if location.vec_index < tasks_for_rounds.len() {
+                        let swapped_task_id = tasks_for_rounds[location.vec_index].id;
+                        if let Some(swapped_location) = self.task_index.get_mut(&swapped_task_id) {
+                            swapped_location.vec_index = location.vec_index;
+                        }
+                    }
+                    
+                    // 如果该轮次的任务列表为空，移除该轮次
+                    if tasks_for_rounds.is_empty() {
+                        slot.remove(&location.rounds);
+                    }
+                    
+                    return true;
                 }
-                
-                return true;
             }
         }
         false
@@ -233,52 +248,58 @@ impl Wheel {
             return cancelled_count;
         }
         
-        // 按槽位分组以优化批量取消
+        // 按 (槽位, 轮次) 分组以优化批量取消
         // 使用 SmallVec 避免大多数情况下的堆分配
-        let mut tasks_by_slot: Vec<SmallVec<[(TaskId, usize); 4]>> = 
-            vec![SmallVec::new(); self.slot_count];
+        let mut tasks_by_slot_rounds: FxHashMap<(usize, u32), SmallVec<[(TaskId, usize); 4]>> = 
+            FxHashMap::default();
         
         // 收集需要取消的任务信息
         for &task_id in task_ids {
             if let Some(location) = self.task_index.get(&task_id) {
-                tasks_by_slot[location.slot_index].push((task_id, location.vec_index));
+                tasks_by_slot_rounds
+                    .entry((location.slot_index, location.rounds))
+                    .or_insert_with(SmallVec::new)
+                    .push((task_id, location.vec_index));
             }
         }
         
-        // 对每个槽位进行批量处理
-        for (slot_index, tasks) in tasks_by_slot.iter_mut().enumerate() {
-            if tasks.is_empty() {
-                continue;
-            }
-            
+        // 对每个 (槽位, 轮次) 组合进行批量处理
+        for ((slot_index, rounds), mut tasks) in tasks_by_slot_rounds {
             // 按 vec_index 降序排序，从后往前删除避免索引失效
             // 使用不稳定排序提升性能
             tasks.sort_unstable_by(|a, b| b.1.cmp(&a.1));
             
             let slot = &mut self.slots[slot_index];
             
-            for &(task_id, vec_index) in tasks.iter() {
-                // 验证任务仍在预期位置
-                if vec_index < slot.len() && slot[vec_index].id == task_id {
-                    // 先取出 notifier 并发送取消通知
-                    if let Some(notifier) = slot[vec_index].completion_notifier.take() {
-                        let _ = notifier.0.send(TaskCompletionReason::Cancelled);
-                    }
-                    
-                    // 使用 swap_remove 移除任务
-                    slot.swap_remove(vec_index);
-                    
-                    // 更新被交换元素的索引
-                    if vec_index < slot.len() {
-                        let swapped_task_id = slot[vec_index].id;
-                        if let Some(swapped_location) = self.task_index.get_mut(&swapped_task_id) {
-                            swapped_location.vec_index = vec_index;
+            if let Some(tasks_for_rounds) = slot.get_mut(&rounds) {
+                for &(task_id, vec_index) in tasks.iter() {
+                    // 验证任务仍在预期位置
+                    if vec_index < tasks_for_rounds.len() && tasks_for_rounds[vec_index].id == task_id {
+                        // 先取出 notifier 并发送取消通知
+                        if let Some(notifier) = tasks_for_rounds[vec_index].completion_notifier.take() {
+                            let _ = notifier.0.send(TaskCompletionReason::Cancelled);
                         }
+                        
+                        // 使用 swap_remove 移除任务
+                        tasks_for_rounds.swap_remove(vec_index);
+                        
+                        // 更新被交换元素的索引
+                        if vec_index < tasks_for_rounds.len() {
+                            let swapped_task_id = tasks_for_rounds[vec_index].id;
+                            if let Some(swapped_location) = self.task_index.get_mut(&swapped_task_id) {
+                                swapped_location.vec_index = vec_index;
+                            }
+                        }
+                        
+                        // 从索引中移除
+                        self.task_index.remove(&task_id);
+                        cancelled_count += 1;
                     }
-                    
-                    // 从索引中移除
-                    self.task_index.remove(&task_id);
-                    cancelled_count += 1;
+                }
+                
+                // 如果该轮次的任务列表为空，移除该轮次
+                if tasks_for_rounds.is_empty() {
+                    slot.remove(&rounds);
                 }
             }
         }
@@ -301,42 +322,33 @@ impl Wheel {
         self.current_tick += 1;
         let slot_index = (self.current_tick as usize) & (self.slot_count - 1);
 
-        // 直接获取槽位的可变引用，避免内存交换
         let slot = &mut self.slots[slot_index];
         
-        // 预分配容量以减少重新分配
-        let mut expired_tasks = Vec::new();
+        // 直接取出 rounds=0 的任务，无需遍历检查
+        let expired_tasks = slot.remove(&0).unwrap_or_default();
         
-        // 使用反向迭代 + swap_remove 避免频繁移动元素
-        let mut i = 0;
-        while i < slot.len() {
-            let task = &mut slot[i];
-            
-            if task.rounds > 0 {
-                // 还有轮次，减少轮次，任务保持在原位
-                task.rounds -= 1;
-                // 更新索引中的位置（可能因为之前的移除而改变）
-                if let Some(location) = self.task_index.get_mut(&task.id) {
-                    location.vec_index = i;
-                }
-                i += 1;
-            } else {
-                // 任务已到期，从索引中移除
-                self.task_index.remove(&task.id);
+        // 清理 task_index 中的到期任务
+        for task in &expired_tasks {
+            self.task_index.remove(&task.id);
+        }
+        
+        // 对所有 rounds > 0 的分组，将 key 从 rounds 改为 rounds-1
+        // 收集所有需要重新映射的轮次
+        let keys_to_remap: Vec<u32> = slot.keys().copied().filter(|&r| r > 0).collect();
+        
+        for old_rounds in keys_to_remap {
+            if let Some(tasks) = slot.remove(&old_rounds) {
+                let new_rounds = old_rounds - 1;
                 
-                // 使用 swap_remove 移除任务（O(1) 操作）
-                let expired_task = slot.swap_remove(i);
-                
-                // 如果 swap 发生了（即不是最后一个元素），更新被交换元素的索引
-                if i < slot.len() {
-                    let swapped_task_id = slot[i].id;
-                    if let Some(swapped_location) = self.task_index.get_mut(&swapped_task_id) {
-                        swapped_location.vec_index = i;
+                // 更新 task_index 中所有任务的 rounds
+                for (vec_index, task) in tasks.iter().enumerate() {
+                    if let Some(location) = self.task_index.get_mut(&task.id) {
+                        location.rounds = new_rounds;
+                        location.vec_index = vec_index;
                     }
                 }
                 
-                expired_tasks.push(expired_task);
-                // 不增加 i，因为 swap_remove 将后面的元素移到了当前位置
+                slot.insert(new_rounds, tasks);
             }
         }
 
@@ -376,44 +388,54 @@ impl Wheel {
         if let Some(location) = self.task_index.remove(&task_id) {
             let slot = &mut self.slots[location.slot_index];
             
-            // 验证任务仍在预期位置
-            if location.vec_index < slot.len() && slot[location.vec_index].id == task_id {
-                // 使用 swap_remove 移除任务
-                let mut task = slot.swap_remove(location.vec_index);
-                
-                // 更新被交换元素的索引（如果发生了交换）
-                if location.vec_index < slot.len() {
-                    let swapped_task_id = slot[location.vec_index].id;
-                    if let Some(swapped_location) = self.task_index.get_mut(&swapped_task_id) {
-                        swapped_location.vec_index = location.vec_index;
+            // 获取对应轮次的任务列表
+            if let Some(tasks_for_rounds) = slot.get_mut(&location.rounds) {
+                // 验证任务仍在预期位置
+                if location.vec_index < tasks_for_rounds.len() && tasks_for_rounds[location.vec_index].id == task_id {
+                    // 使用 swap_remove 移除任务
+                    let mut task = tasks_for_rounds.swap_remove(location.vec_index);
+                    
+                    // 更新被交换元素的索引（如果发生了交换）
+                    if location.vec_index < tasks_for_rounds.len() {
+                        let swapped_task_id = tasks_for_rounds[location.vec_index].id;
+                        if let Some(swapped_location) = self.task_index.get_mut(&swapped_task_id) {
+                            swapped_location.vec_index = location.vec_index;
+                        }
                     }
+                    
+                    // 如果该轮次的任务列表为空，移除该轮次
+                    if tasks_for_rounds.is_empty() {
+                        slot.remove(&location.rounds);
+                    }
+                    
+                    // 步骤2: 更新任务的延迟和回调
+                    task.delay = new_delay;
+                    if let Some(callback) = new_callback {
+                        task.callback = Some(callback);
+                    }
+                    
+                    // 步骤3: 根据新延迟重新计算槽位和轮次
+                    let ticks = self.delay_to_ticks(new_delay);
+                    let total_ticks = self.current_tick + ticks;
+                    let new_slot_index = (total_ticks as usize) & (self.slot_count - 1);
+                    let new_rounds = (total_ticks / self.slot_count as u64)
+                        .saturating_sub(self.current_tick / self.slot_count as u64) as u32;
+                    
+                    // 更新任务的时间轮参数
+                    task.deadline_tick = total_ticks;
+                    task.rounds = new_rounds;
+                    
+                    // 步骤4: 重新插入任务到新槽位的对应轮次分组
+                    let new_slot = &mut self.slots[new_slot_index];
+                    let tasks_for_new_rounds = new_slot.entry(new_rounds).or_insert_with(Vec::new);
+                    let new_vec_index = tasks_for_new_rounds.len();
+                    let new_location = TaskLocation::new(new_slot_index, new_rounds, new_vec_index);
+                    
+                    tasks_for_new_rounds.push(task);
+                    self.task_index.insert(task_id, new_location);
+                    
+                    return true;
                 }
-                
-                // 步骤2: 更新任务的延迟和回调
-                task.delay = new_delay;
-                if let Some(callback) = new_callback {
-                    task.callback = Some(callback);
-                }
-                
-                // 步骤3: 根据新延迟重新计算槽位和轮次
-                let ticks = self.delay_to_ticks(new_delay);
-                let total_ticks = self.current_tick + ticks;
-                let new_slot_index = (total_ticks as usize) & (self.slot_count - 1);
-                let new_rounds = (total_ticks / self.slot_count as u64)
-                    .saturating_sub(self.current_tick / self.slot_count as u64) as u32;
-                
-                // 更新任务的时间轮参数
-                task.deadline_tick = total_ticks;
-                task.rounds = new_rounds;
-                
-                // 步骤4: 重新插入任务到新槽位
-                let new_vec_index = self.slots[new_slot_index].len();
-                let new_location = TaskLocation::new(new_slot_index, new_vec_index);
-                
-                self.slots[new_slot_index].push(task);
-                self.task_index.insert(task_id, new_location);
-                
-                return true;
             }
         }
         false
@@ -1005,4 +1027,5 @@ mod tests {
         assert_eq!(task_ids.len(), 100);
     }
 }
+
 
