@@ -17,20 +17,33 @@ struct WheelLayer {
     
     /// 每个 tick 的时间长度
     tick_duration: Duration,
+    
+    /// 缓存：tick 时长（毫秒，u64）- 避免重复转换
+    tick_duration_ms: u64,
+    
+    /// 缓存：槽位掩码（slot_count - 1）- 用于快速取模
+    slot_mask: usize,
 }
 
 impl WheelLayer {
     fn new(slot_count: usize, tick_duration: Duration) -> Self {
         let mut slots = Vec::with_capacity(slot_count);
+        // 为每个槽位预分配容量，减少后续 push 时的重新分配
+        // 大多数槽位通常包含 0-4 个任务，预分配 4 个容量
         for _ in 0..slot_count {
-            slots.push(Vec::new());
+            slots.push(Vec::with_capacity(4));
         }
+        
+        let tick_duration_ms = tick_duration.as_millis() as u64;
+        let slot_mask = slot_count - 1;
         
         Self {
             slots,
             current_tick: 0,
             slot_count,
             tick_duration,
+            tick_duration_ms,
+            slot_mask,
         }
     }
     
@@ -57,6 +70,12 @@ pub struct Wheel {
     
     /// 批处理配置
     batch_config: BatchConfig,
+    
+    /// 缓存：L0 层容量（毫秒）- 避免重复计算
+    l0_capacity_ms: u64,
+    
+    /// 缓存：L1 层容量（tick 数）- 避免重复计算
+    l1_capacity_ticks: u64,
 }
 
 impl Wheel {
@@ -75,8 +94,11 @@ impl Wheel {
         let l1 = WheelLayer::new(h_config.l1_slot_count, h_config.l1_tick_duration);
         
         // 计算 L1 tick 相对于 L0 tick 的比率
-        let l1_tick_ratio = h_config.l1_tick_duration.as_millis() as u64 
-            / h_config.l0_tick_duration.as_millis() as u64;
+        let l1_tick_ratio = l1.tick_duration_ms / l0.tick_duration_ms;
+        
+        // 预计算容量，避免在 insert 中重复计算
+        let l0_capacity_ms = (l0.slot_count as u64) * l0.tick_duration_ms;
+        let l1_capacity_ticks = l1.slot_count as u64;
         
         Self {
             l0,
@@ -84,6 +106,8 @@ impl Wheel {
             l1_tick_ratio,
             task_index: FxHashMap::default(),
             batch_config,
+            l0_capacity_ms,
+            l1_capacity_ticks,
         }
     }
 
@@ -120,24 +144,20 @@ impl Wheel {
     #[inline(always)]
     fn determine_layer(&self, delay: Duration) -> (u8, u64, u32) {
         let delay_ms = delay.as_millis() as u64;
-        let l0_capacity_ms = (self.l0.slot_count as u64) * (self.l0.tick_duration.as_millis() as u64);
         
-        // 快速路径：大多数任务在 L0 范围内
-        if delay_ms < l0_capacity_ms {
-            let l0_ticks = delay_ms / self.l0.tick_duration.as_millis() as u64;
-            let l0_ticks = l0_ticks.max(1); // 至少 1 个 tick
+        // 快速路径：大多数任务在 L0 范围内（使用缓存的容量）
+        if delay_ms < self.l0_capacity_ms {
+            let l0_ticks = (delay_ms / self.l0.tick_duration_ms).max(1);
             return (0, l0_ticks, 0);
         }
         
-        // 慢速路径：L1 层任务
-        let l1_ticks = delay_ms / self.l1.tick_duration.as_millis() as u64;
-        let l1_ticks = l1_ticks.max(1);
-        let l1_capacity = self.l1.slot_count as u64;
+        // 慢速路径：L1 层任务（使用缓存的值）
+        let l1_ticks = (delay_ms / self.l1.tick_duration_ms).max(1);
         
-        if l1_ticks < l1_capacity {
+        if l1_ticks < self.l1_capacity_ticks {
             (1, l1_ticks, 0)
         } else {
-            let rounds = (l1_ticks / l1_capacity) as u32;
+            let rounds = (l1_ticks / self.l1_capacity_ticks) as u32;
             (1, l1_ticks, rounds)
         }
     }
@@ -160,14 +180,14 @@ impl Wheel {
     pub fn insert(&mut self, mut task: TimerTask, notifier: crate::task::CompletionNotifier) -> TaskId {
         let (level, ticks, rounds) = self.determine_layer(task.delay);
         
-        // 使用 match 减少分支
-        let (current_tick, slot_count, slots) = match level {
-            0 => (self.l0.current_tick, self.l0.slot_count, &mut self.l0.slots),
-            _ => (self.l1.current_tick, self.l1.slot_count, &mut self.l1.slots),
+        // 使用 match 减少分支，并使用缓存的槽位掩码
+        let (current_tick, slot_mask, slots) = match level {
+            0 => (self.l0.current_tick, self.l0.slot_mask, &mut self.l0.slots),
+            _ => (self.l1.current_tick, self.l1.slot_mask, &mut self.l1.slots),
         };
         
         let total_ticks = current_tick + ticks;
-        let slot_index = (total_ticks as usize) & (slot_count - 1);
+        let slot_index = (total_ticks as usize) & slot_mask;
 
         // 准备任务注册（设置 notifier 和时间轮参数）
         task.prepare_for_registration(notifier, total_ticks, rounds);
@@ -210,14 +230,14 @@ impl Wheel {
         for (mut task, notifier) in tasks {
             let (level, ticks, rounds) = self.determine_layer(task.delay);
             
-            // 使用 match 减少分支
-            let (current_tick, slot_count, slots) = match level {
-                0 => (self.l0.current_tick, self.l0.slot_count, &mut self.l0.slots),
-                _ => (self.l1.current_tick, self.l1.slot_count, &mut self.l1.slots),
+            // 使用 match 减少分支，并使用缓存的槽位掩码
+            let (current_tick, slot_mask, slots) = match level {
+                0 => (self.l0.current_tick, self.l0.slot_mask, &mut self.l0.slots),
+                _ => (self.l1.current_tick, self.l1.slot_mask, &mut self.l1.slots),
             };
             
             let total_ticks = current_tick + ticks;
-            let slot_index = (total_ticks as usize) & (slot_count - 1);
+            let slot_index = (total_ticks as usize) & slot_mask;
 
             // 准备任务注册（设置 notifier 和时间轮参数）
             task.prepare_for_registration(notifier, total_ticks, rounds);
@@ -420,7 +440,7 @@ impl Wheel {
         let mut expired_tasks = Vec::new();
         
         // 处理 L0 层的到期任务（分层模式：L0 层没有 rounds，直接返回所有任务）
-        let l0_slot_index = (self.l0.current_tick as usize) & (self.l0.slot_count - 1);
+        let l0_slot_index = (self.l0.current_tick as usize) & self.l0.slot_mask;
         let l0_slot = &mut self.l0.slots[l0_slot_index];
         
         let i = 0;
@@ -448,7 +468,7 @@ impl Wheel {
         // 检查是否需要推进 L1 层
         if self.l0.current_tick % self.l1_tick_ratio == 0 {
             self.l1.current_tick += 1;
-            let l1_slot_index = (self.l1.current_tick as usize) & (self.l1.slot_count - 1);
+            let l1_slot_index = (self.l1.current_tick as usize) & self.l1.slot_mask;
             let l1_slot = &mut self.l1.slots[l1_slot_index];
             
             // 收集 L1 层到期的任务
@@ -512,7 +532,7 @@ impl Wheel {
             
             // 计算 L0 槽位索引
             let target_l0_tick = l0_current_tick + remaining_l0_ticks;
-            let l0_slot_index = (target_l0_tick as usize) & (self.l0.slot_count - 1);
+            let l0_slot_index = (target_l0_tick as usize) & self.l0.slot_mask;
             
             let task_id = task.id;
             let vec_index = self.l0.slots[l0_slot_index].len();
@@ -593,14 +613,14 @@ impl Wheel {
         // 步骤3: 根据新延迟重新计算层级、槽位和轮次
         let (new_level, ticks, new_rounds) = self.determine_layer(new_delay);
         
-        // 使用 match 减少分支
-        let (current_tick, slot_count, slots) = match new_level {
-            0 => (self.l0.current_tick, self.l0.slot_count, &mut self.l0.slots),
-            _ => (self.l1.current_tick, self.l1.slot_count, &mut self.l1.slots),
+        // 使用 match 减少分支，并使用缓存的槽位掩码
+        let (current_tick, slot_mask, slots) = match new_level {
+            0 => (self.l0.current_tick, self.l0.slot_mask, &mut self.l0.slots),
+            _ => (self.l1.current_tick, self.l1.slot_mask, &mut self.l1.slots),
         };
         
         let total_ticks = current_tick + ticks;
-        let new_slot_index = (total_ticks as usize) & (slot_count - 1);
+        let new_slot_index = (total_ticks as usize) & slot_mask;
         
         // 更新任务的时间轮参数
         task.deadline_tick = total_ticks;
