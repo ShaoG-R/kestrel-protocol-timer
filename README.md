@@ -2,6 +2,12 @@
 
 > 基于时间轮（Timing Wheel）算法的高性能异步定时器系统
 
+> [!NOTE]
+> 当前库已改名
+> 请你到 [kestrel-timer](https://github.com/ShaoG-R/kestrel-protocol-timer)查看最新实现
+> 本库已废弃
+
+
 [![Rust](https://img.shields.io/badge/rust-1.70%2B-orange.svg)](https://www.rust-lang.org/)
 [![Tokio](https://img.shields.io/badge/tokio-1.48-blue.svg)](https://tokio.rs/)
 [![Crates.io](https://img.shields.io/crates/v/kestrel-protocol-timer.svg)](https://crates.io/crates/kestrel-protocol-timer)
